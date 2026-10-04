@@ -1,0 +1,6 @@
+{
+  "name": "KasirKu",
+  "description": "Aplikasi Kasir POS (Point of Sale) offline lengkap untuk manajemen transaksi, produk, stok, pelanggan, laporan keuangan, scanner barcode, dan printer struk thermal Bluetooth.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
