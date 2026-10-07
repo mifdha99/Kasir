@@ -56,7 +56,6 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -290,9 +289,9 @@ fun SettingsScreen(
     }
 
     val sectionTitles = listOf(
-        "Info Toko",
+        "Info Resto",
         "Kasir & Akses",
-        "Transaksi & Stok",
+        "Transaksi & Billing",
         "Printer Bluetooth",
         "Tampilan",
         "Backup & Export",
@@ -326,7 +325,7 @@ fun SettingsScreen(
         ) {
             when (selectedSection) {
                 0 -> {
-                    // INFORMASI TOKO
+                    // INFORMASI RESTO / WARUNG
                     item {
                         Card(
                             shape = RoundedCornerShape(16.dp),
@@ -337,7 +336,7 @@ fun SettingsScreen(
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Text("Informasi Profil Toko", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("Informasi Profil Resto / Warung", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -346,7 +345,7 @@ fun SettingsScreen(
                                     if (draft.storeLogoUri.isNotBlank()) {
                                         AsyncImage(
                                             model = Uri.parse(draft.storeLogoUri),
-                                            contentDescription = "Logo Toko",
+                                            contentDescription = "Logo Resto",
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier
                                                 .size(68.dp)
@@ -371,7 +370,7 @@ fun SettingsScreen(
                                                 )
                                             }
                                         ) {
-                                            Text("Pilih Logo Toko")
+                                            Text("Pilih Logo Resto")
                                         }
                                         if (draft.storeLogoUri.isNotBlank()) {
                                             TextButton(onClick = { draft = draft.copy(storeLogoUri = "") }) {
@@ -384,14 +383,14 @@ fun SettingsScreen(
                                 OutlinedTextField(
                                     value = draft.storeName,
                                     onValueChange = { draft = draft.copy(storeName = it) },
-                                    label = { Text("Nama Toko *") },
+                                    label = { Text("Nama Resto / Warung *") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 OutlinedTextField(
                                     value = draft.storeAddress,
                                     onValueChange = { draft = draft.copy(storeAddress = it) },
-                                    label = { Text("Alamat Toko") },
+                                    label = { Text("Alamat Resto") },
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 OutlinedTextField(
@@ -404,7 +403,7 @@ fun SettingsScreen(
                                 OutlinedTextField(
                                     value = draft.storeEmail,
                                     onValueChange = { draft = draft.copy(storeEmail = it) },
-                                    label = { Text("Email Toko") },
+                                    label = { Text("Email (Opsional)") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
@@ -428,7 +427,7 @@ fun SettingsScreen(
                                 ) {
                                     Icon(Icons.Default.Save, contentDescription = null)
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Simpan Informasi Toko")
+                                    Text("Simpan Informasi Resto")
                                 }
                             }
                         }
@@ -470,8 +469,7 @@ fun SettingsScreen(
                                     Text("${u.name} (${u.role})", fontWeight = FontWeight.Bold)
                                     val perms = buildList {
                                         if (u.canGiveDiscount) add("Diskon")
-                                        if (u.canManageStock) add("Stok")
-                                        if (u.canVoidTransaction) add("Refund")
+                                        if (u.canVoidTransaction) add("Batal Billing")
                                         if (u.canViewReports) add("Laporan")
                                         if (u.canManageSettings) add("Pengaturan")
                                     }
@@ -497,7 +495,7 @@ fun SettingsScreen(
                 }
 
                 2 -> {
-                    // PENGATURAN TRANSAKSI & STOK
+                    // PENGATURAN TRANSAKSI & BILLING
                     item {
                         Card(
                             shape = RoundedCornerShape(16.dp),
@@ -508,18 +506,18 @@ fun SettingsScreen(
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Text("Pengaturan Transaksi", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("Pengaturan Pembayaran Billing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
                                 SettingSwitchRow(
                                     title = "Aktifkan Fitur Diskon",
-                                    subtitle = "Izinkan input potongan diskon di halaman kasir",
+                                    subtitle = "Izinkan potongan diskon saat pembayaran billing",
                                     checked = draft.enableDiscount,
                                     onCheckedChange = { draft = draft.copy(enableDiscount = it) }
                                 )
 
                                 SettingSwitchRow(
-                                    title = "Aktifkan Pajak Otomatis (PPN)",
-                                    subtitle = "Tambahkan pajak otomatis pada setiap transaksi",
+                                    title = "Aktifkan Pajak Otomatis (PB1 / PPN)",
+                                    subtitle = "Tambahkan pajak otomatis saat pembayaran billing",
                                     checked = draft.enableTax,
                                     onCheckedChange = { draft = draft.copy(enableTax = it) }
                                 )
@@ -559,53 +557,13 @@ fun SettingsScreen(
                                     onCheckedChange = { draft = draft.copy(enableRounding = it) }
                                 )
 
-                                SettingSwitchRow(
-                                    title = "Nomor Transaksi Otomatis",
-                                    subtitle = "Buat nomor struk berurutan secara otomatis",
-                                    checked = draft.autoInvoiceNumber,
-                                    onCheckedChange = { draft = draft.copy(autoInvoiceNumber = it) }
-                                )
-
-                                OutlinedTextField(
-                                    value = draft.invoicePrefix,
-                                    onValueChange = { draft = draft.copy(invoicePrefix = it) },
-                                    label = { Text("Format / Prefix Nomor Transaksi (Contoh: INV)") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                HorizontalDivider()
-
-                                Text("Pengaturan Stok", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-                                SettingSwitchRow(
-                                    title = "Pengurangan Stok Otomatis",
-                                    subtitle = "Kurangi stok produk secara otomatis saat pembayaran berhasil",
-                                    checked = draft.autoReduceStock,
-                                    onCheckedChange = { draft = draft.copy(autoReduceStock = it) }
-                                )
-
-                                SettingSwitchRow(
-                                    title = "Peringatan Stok Minimum",
-                                    subtitle = "Tampilkan indikator stok menipis pada produk & beranda",
-                                    checked = draft.enableLowStockAlert,
-                                    onCheckedChange = { draft = draft.copy(enableLowStockAlert = it) }
-                                )
-
-                                SettingSwitchRow(
-                                    title = "Izinkan Stok Minus (Negatif)",
-                                    subtitle = "Jika aktif, kasir tetap bisa menjual produk meski stok tercatat 0",
-                                    checked = draft.allowNegativeStock,
-                                    onCheckedChange = { draft = draft.copy(allowNegativeStock = it) }
-                                )
-
                                 Button(
                                     onClick = { onSaveSettings(draft) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Icon(Icons.Default.Save, contentDescription = null)
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Simpan Pengaturan Transaksi & Stok")
+                                    Text("Simpan Pengaturan Transaksi")
                                 }
                             }
                         }
@@ -670,8 +628,15 @@ fun SettingsScreen(
                                 }
 
                                 SettingSwitchRow(
-                                    title = "Cetak Otomatis Setelah Pembayaran",
-                                    subtitle = "Langsung cetak struk ke printer default begitu pembayaran selesai",
+                                    title = "Cetak Tiket Dapur Otomatis",
+                                    subtitle = "Langsung cetak pesanan dapur saat tombol KIRIM PESANAN ditekan",
+                                    checked = draft.autoPrintKitchenTicket,
+                                    onCheckedChange = { draft = draft.copy(autoPrintKitchenTicket = it) }
+                                )
+
+                                SettingSwitchRow(
+                                    title = "Cetak Struk Lunas Otomatis",
+                                    subtitle = "Langsung cetak struk pembayaran saat tombol BAYAR & SELESAIKAN ditekan",
                                     checked = draft.autoPrintReceipt,
                                     onCheckedChange = { draft = draft.copy(autoPrintReceipt = it) }
                                 )
@@ -815,7 +780,7 @@ fun SettingsScreen(
                                     }
                                 }
 
-                                Text("Tampilan Produk di Halaman Kasir", fontWeight = FontWeight.SemiBold)
+                                Text("Tampilan Menu di Halaman Pesan", fontWeight = FontWeight.SemiBold)
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     FilterChip(
                                         selected = draft.productViewMode == "GRID",
@@ -836,7 +801,7 @@ fun SettingsScreen(
                                 }
 
                                 if (draft.productViewMode == "GRID") {
-                                    Text("Jumlah Produk per Baris (Grid)", fontWeight = FontWeight.SemiBold)
+                                    Text("Jumlah Menu per Baris (Grid)", fontWeight = FontWeight.SemiBold)
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         listOf(2, 3).forEach { cols ->
                                             FilterChip(
@@ -869,14 +834,14 @@ fun SettingsScreen(
                             ) {
                                 Text("Backup & Restore Database Lengkap", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "Simpan seluruh database (produk, transaksi, stok, pelanggan, pengaturan) ke penyimpanan HP Anda secara aman menggunakan Storage Access Framework.",
+                                    "Simpan seluruh database (menu, kategori, billing, riwayat transaksi, pelanggan, pengaturan) ke penyimpanan HP Anda menggunakan Storage Access Framework.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
                                 Button(
                                     onClick = {
-                                        val fileName = "KasirKu_Backup_${SecurityAndFormatUtils.formatInvoiceDate(System.currentTimeMillis())}.json"
+                                        val fileName = "KasirKu_Resto_Backup_${SecurityAndFormatUtils.formatInvoiceDate(System.currentTimeMillis())}.json"
                                         createBackupLauncher.launch(fileName)
                                     },
                                     modifier = Modifier
@@ -903,9 +868,9 @@ fun SettingsScreen(
 
                                 HorizontalDivider()
 
-                                Text("Export & Import Katalog Produk (CSV)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("Export & Import Daftar Menu (CSV)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "Ekspor daftar produk ke Excel/CSV atau impor produk massal dari file CSV.",
+                                    "Ekspor daftar menu makanan/minuman ke Excel/CSV atau impor menu massal dari file CSV.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -916,7 +881,7 @@ fun SettingsScreen(
                                 ) {
                                     OutlinedButton(
                                         onClick = {
-                                            exportCsvLauncher.launch("Katalog_Produk_KasirKu.csv")
+                                            exportCsvLauncher.launch("Daftar_Menu_KasirKu.csv")
                                         },
                                         modifier = Modifier.weight(1f)
                                     ) {
@@ -957,7 +922,7 @@ fun SettingsScreen(
 
                                 SettingSwitchRow(
                                     title = "Lindungi Menu Pengaturan dengan PIN Admin",
-                                    subtitle = "Wajib memasukkan PIN Admin sebelum mengubah pengaturan toko",
+                                    subtitle = "Wajib memasukkan PIN Admin sebelum mengubah pengaturan resto",
                                     checked = draft.protectAdminSettings,
                                     onCheckedChange = { draft = draft.copy(protectAdminSettings = it) }
                                 )
@@ -1051,7 +1016,6 @@ private fun CashierUserFormDialog(
     var role by remember { mutableStateOf(initialUser.role) }
     var rawPin by remember { mutableStateOf("") }
     var canGiveDiscount by remember { mutableStateOf(initialUser.canGiveDiscount) }
-    var canManageStock by remember { mutableStateOf(initialUser.canManageStock) }
     var canVoidTransaction by remember { mutableStateOf(initialUser.canVoidTransaction) }
     var canViewReports by remember { mutableStateOf(initialUser.canViewReports) }
     var canManageSettings by remember { mutableStateOf(initialUser.canManageSettings) }
@@ -1099,11 +1063,10 @@ private fun CashierUserFormDialog(
                 )
 
                 Text("Hak Akses Kasir:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
-                PermissionCheckbox("Beri Diskon Transaksi", canGiveDiscount) { canGiveDiscount = it }
-                PermissionCheckbox("Kelola Stok Barang", canManageStock) { canManageStock = it }
-                PermissionCheckbox("Batalkan / Refund Transaksi", canVoidTransaction) { canVoidTransaction = it }
-                PermissionCheckbox("Lihat Laporan Keuangan", canViewReports) { canViewReports = it }
-                PermissionCheckbox("Ubah Pengaturan Toko", canManageSettings) { canManageSettings = it }
+                PermissionCheckbox("Beri Diskon Pembayaran", canGiveDiscount) { canGiveDiscount = it }
+                PermissionCheckbox("Batalkan Billing / Transaksi", canVoidTransaction) { canVoidTransaction = it }
+                PermissionCheckbox("Lihat Laporan Penjualan", canViewReports) { canViewReports = it }
+                PermissionCheckbox("Ubah Pengaturan Resto", canManageSettings) { canManageSettings = it }
 
                 if (errorMsg != null) {
                     Text(errorMsg!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -1126,7 +1089,6 @@ private fun CashierUserFormDialog(
                             name = name.trim(),
                             role = role,
                             canGiveDiscount = canGiveDiscount,
-                            canManageStock = canManageStock,
                             canVoidTransaction = canVoidTransaction,
                             canViewReports = canViewReports,
                             canManageSettings = canManageSettings

@@ -22,17 +22,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.PendingActions
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.RestaurantMenu
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -87,34 +87,32 @@ fun DashboardScreen(
     allUsers: List<CashierUserEntity>,
     products: List<ProductEntity>,
     transactions: List<TransactionWithItems>,
+    unpaidBillings: List<TransactionWithItems>,
     onNavigate: (AppScreen) -> Unit,
     onSwitchCashier: (CashierUserEntity, String) -> Boolean,
     onLockApp: () -> Unit,
-    onSelectTransaction: (TransactionWithItems) -> Unit
+    onSelectTransaction: (TransactionWithItems) -> Unit,
+    onSelectBillingToPay: (TransactionWithItems) -> Unit
 ) {
     val startOfToday = remember { SecurityAndFormatUtils.getStartOfDay() }
     val endOfToday = remember { SecurityAndFormatUtils.getEndOfDay() }
 
-    val completedToday = remember(transactions, startOfToday, endOfToday) {
+    val paidToday = remember(transactions, startOfToday, endOfToday) {
         transactions.filter {
-            it.transaction.status == "COMPLETED" &&
+            (it.transaction.status == "PAID" || it.transaction.status == "COMPLETED") &&
                 it.transaction.timestamp in startOfToday..endOfToday
         }
     }
 
-    val omzetHariIni = remember(completedToday) {
-        completedToday.sumOf { it.transaction.totalAmount }
+    val omzetHariIni = remember(paidToday) {
+        paidToday.sumOf { it.transaction.totalAmount }
     }
-    val jumlahTransaksiHariIni = completedToday.size
-
-    val lowStockProducts = remember(products) {
-        products.filter { it.isActive && it.stock <= it.minStock }
-    }
+    val jumlahLunasHariIni = paidToday.size
 
     val bestSellingProduct = remember(transactions) {
-        val completedAll = transactions.filter { it.transaction.status == "COMPLETED" }
+        val paidAll = transactions.filter { it.transaction.status == "PAID" || it.transaction.status == "COMPLETED" }
         val mapQty = mutableMapOf<String, Int>()
-        for (tw in completedAll) {
+        for (tw in paidAll) {
             for (item in tw.items) {
                 mapQty[item.productName] = (mapQty[item.productName] ?: 0) + item.quantity
             }
@@ -122,8 +120,8 @@ fun DashboardScreen(
         mapQty.maxByOrNull { it.value }
     }
 
-    val recentTransactions = remember(transactions) {
-        transactions.take(5)
+    val recentPaidTransactions = remember(transactions) {
+        transactions.filter { it.transaction.status != "UNPAID" }.take(5)
     }
 
     var showSwitchCashierDialog by remember { mutableStateOf(false) }
@@ -141,16 +139,16 @@ fun DashboardScreen(
         )
     }
 
-    val menuItems = remember {
+    val menuItems = remember(unpaidBillings.size) {
         listOf(
-            MenuGridItem("Transaksi", "Kasir Cepat", Icons.Default.PointOfSale, AppScreen.POS, Color(0xFF0F766E), "menu_pos"),
-            MenuGridItem("Daftar Produk", "Kelola Barang", Icons.Default.ShoppingBag, AppScreen.PRODUCTS, Color(0xFF2563EB), "menu_products"),
-            MenuGridItem("Kategori", "Grup Produk", Icons.Default.Category, AppScreen.CATEGORIES, Color(0xFF7C3AED), "menu_categories"),
-            MenuGridItem("Riwayat Transaksi", "Struk & Refund", Icons.Default.History, AppScreen.HISTORY, Color(0xFFD97706), "menu_history"),
-            MenuGridItem("Laporan", "Omzet & Laba", Icons.Default.Assessment, AppScreen.REPORTS, Color(0xFF059669), "menu_reports"),
-            MenuGridItem("Stok", "Masuk & Opname", Icons.Default.Inventory, AppScreen.STOCK, Color(0xFFDC2626), "menu_stock"),
-            MenuGridItem("Pelanggan", "Database Member", Icons.Default.People, AppScreen.CUSTOMERS, Color(0xFF0284C7), "menu_customers"),
-            MenuGridItem("Pengaturan", "Toko & Printer", Icons.Default.Settings, AppScreen.SETTINGS, Color(0xFF475569), "menu_settings")
+            MenuGridItem("Pesan Menu", "Buat Billing & Dapur", Icons.Default.RestaurantMenu, AppScreen.POS, Color(0xFF0F766E), "menu_pos"),
+            MenuGridItem("Pembayaran", "${unpaidBillings.size} Billing Belum Bayar", Icons.Default.Payments, AppScreen.PAYMENT, Color(0xFFD97706), "menu_payment"),
+            MenuGridItem("Daftar Menu", "Makanan & Minuman", Icons.Default.Restaurant, AppScreen.PRODUCTS, Color(0xFF2563EB), "menu_products"),
+            MenuGridItem("Kategori", "Atur Kategori Menu", Icons.Default.Category, AppScreen.CATEGORIES, Color(0xFF7C3AED), "menu_categories"),
+            MenuGridItem("Riwayat Transaksi", "Billing Lunas & Struk", Icons.Default.History, AppScreen.HISTORY, Color(0xFF059669), "menu_history"),
+            MenuGridItem("Laporan", "Omzet & Keuntungan", Icons.Default.Assessment, AppScreen.REPORTS, Color(0xFF0284C7), "menu_reports"),
+            MenuGridItem("Pelanggan", "Data Pelanggan", Icons.Default.People, AppScreen.CUSTOMERS, Color(0xFFDB2777), "menu_customers"),
+            MenuGridItem("Pengaturan", "Resto & Printer", Icons.Default.Settings, AppScreen.SETTINGS, Color(0xFF475569), "menu_settings")
         )
     }
 
@@ -176,7 +174,7 @@ fun DashboardScreen(
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Text(
-                        text = settings.storeAddress.ifBlank { "Siap melayani transaksi offline & cepat" },
+                        text = settings.storeAddress.ifBlank { "Kasir Restoran & Warung Offline Cepat" },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -228,12 +226,11 @@ fun DashboardScreen(
             }
         }
 
-        // Hero POS Banner Card with Quick CTA
+        // Hero Banner Card with Two Fast Actions: PESAN MENU & PEMBAYARAN
         item {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onNavigate(AppScreen.POS) }
                     .testTag("hero_pos_card"),
                 shape = RoundedCornerShape(20.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
@@ -241,11 +238,11 @@ fun DashboardScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(170.dp)
+                        .height(185.dp)
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.img_pos_banner),
-                        contentDescription = "KasirKu Point of Sale",
+                        contentDescription = "KasirKu Restoran",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -255,9 +252,9 @@ fun DashboardScreen(
                             .background(
                                 Brush.horizontalGradient(
                                     colors = listOf(
-                                        Color(0xE6042F2E),
-                                        Color(0xB30F766E),
-                                        Color(0x330F766E)
+                                        Color(0xEE042F2E),
+                                        Color(0xCC0F766E),
+                                        Color(0x660F766E)
                                     )
                                 )
                             )
@@ -270,37 +267,65 @@ fun DashboardScreen(
                     ) {
                         Column {
                             Text(
-                                text = "KASIR CEPAT & OFFLINE",
+                                text = "KASIR RESTORAN & WARUNG",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = Color(0xFF99F6E4),
                                 fontWeight = FontWeight.Bold
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Mulai Transaksi Baru",
+                                text = "Pesan Cepat & Bayar Mudah",
                                 style = MaterialTheme.typography.titleLarge,
                                 color = Color.White,
                                 fontWeight = FontWeight.ExtraBold
                             )
                             Text(
-                                text = "Scan barcode, hitung kembalian & cetak struk",
+                                text = "Pilih menu → Kirim ke dapur → Bayar Billing",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFFE2E8F0)
                             )
                         }
 
-                        Button(
-                            onClick = { onNavigate(AppScreen.POS) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFF59E0B),
-                                contentColor = Color(0xFF0F172A)
-                            ),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.testTag("btn_hero_open_pos")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.PointOfSale, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("BUKA MESIN KASIR", fontWeight = FontWeight.ExtraBold)
+                            Button(
+                                onClick = { onNavigate(AppScreen.POS) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFF59E0B),
+                                    contentColor = Color(0xFF0F172A)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("btn_hero_open_pos")
+                            ) {
+                                Icon(Icons.Default.RestaurantMenu, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("PESAN MENU", fontWeight = FontWeight.ExtraBold)
+                            }
+
+                            Button(
+                                onClick = { onNavigate(AppScreen.PAYMENT) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White,
+                                    contentColor = Color(0xFF0F766E)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("btn_hero_open_payment")
+                            ) {
+                                Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (unpaidBillings.isNotEmpty()) "BAYAR (${unpaidBillings.size})" else "PEMBAYARAN",
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
                         }
                     }
                 }
@@ -309,6 +334,7 @@ fun DashboardScreen(
 
         // Dashboard Summary Metrics (2x2 Grid)
         item {
+            val totalUnpaidNominal = unpaidBillings.sumOf { it.transaction.totalAmount }
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -317,7 +343,7 @@ fun DashboardScreen(
                     DashboardMetricCard(
                         title = "Omzet Hari Ini",
                         value = SecurityAndFormatUtils.formatRupiah(omzetHariIni),
-                        subtitle = "$jumlahTransaksiHariIni Transaksi Selesai",
+                        subtitle = "$jumlahLunasHariIni Billing Lunas",
                         icon = Icons.Default.TrendingUp,
                         accentColor = Color(0xFF0F766E),
                         modifier = Modifier
@@ -325,14 +351,18 @@ fun DashboardScreen(
                             .clickable { onNavigate(AppScreen.REPORTS) }
                     )
                     DashboardMetricCard(
-                        title = "Produk Terlaris",
-                        value = bestSellingProduct?.key ?: "Belum Ada",
-                        subtitle = if (bestSellingProduct != null) "${bestSellingProduct.value} terjual" else "Siap transaksi",
-                        icon = Icons.Default.Star,
-                        accentColor = Color(0xFFD97706),
+                        title = "Billing Belum Bayar",
+                        value = "${unpaidBillings.size} Billing",
+                        subtitle = if (unpaidBillings.isNotEmpty()) {
+                            "Total ${SecurityAndFormatUtils.formatRupiah(totalUnpaidNominal)}"
+                        } else {
+                            "Semua sudah lunas"
+                        },
+                        icon = Icons.Default.PendingActions,
+                        accentColor = if (unpaidBillings.isNotEmpty()) Color(0xFFD97706) else Color(0xFF059669),
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { onNavigate(AppScreen.REPORTS) }
+                            .clickable { onNavigate(AppScreen.PAYMENT) }
                     )
                 }
 
@@ -341,29 +371,98 @@ fun DashboardScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     DashboardMetricCard(
-                        title = "Stok Hampir Habis",
-                        value = "${lowStockProducts.size} Produk",
-                        subtitle = if (lowStockProducts.isNotEmpty()) {
-                            lowStockProducts.take(2).joinToString(", ") { it.name }
-                        } else {
-                            "Semua stok aman"
-                        },
-                        icon = Icons.Default.WarningAmber,
-                        accentColor = if (lowStockProducts.isNotEmpty()) Color(0xFFDC2626) else Color(0xFF059669),
+                        title = "Menu Terlaris",
+                        value = bestSellingProduct?.key ?: "Belum Ada",
+                        subtitle = if (bestSellingProduct != null) "${bestSellingProduct.value} porsi terjual" else "Siap melayani",
+                        icon = Icons.Default.Star,
+                        accentColor = Color(0xFF7C3AED),
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { onNavigate(AppScreen.STOCK) }
+                            .clickable { onNavigate(AppScreen.REPORTS) }
                     )
                     DashboardMetricCard(
-                        title = "Total Produk Aktif",
-                        value = "${products.count { it.isActive }} Item",
-                        subtitle = "Terdaftar di katalog",
-                        icon = Icons.Default.ShoppingBag,
+                        title = "Menu Tersedia",
+                        value = "${products.count { it.isActive }} Menu",
+                        subtitle = "Makanan & Minuman",
+                        icon = Icons.Default.Restaurant,
                         accentColor = Color(0xFF2563EB),
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onNavigate(AppScreen.PRODUCTS) }
                     )
+                }
+            }
+        }
+
+        // Quick Unpaid Billings Banner if any exist
+        if (unpaidBillings.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Billing Menunggu Pembayaran (${unpaidBillings.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(onClick = { onNavigate(AppScreen.PAYMENT) }) {
+                        Text("Buka Pembayaran")
+                    }
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    unpaidBillings.take(3).forEach { tw ->
+                        val tx = tw.transaction
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectBillingToPay(tw) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFFFEF3C7).copy(alpha = 0.65f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = tx.billingDisplay,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF78350F)
+                                    )
+                                    Text(
+                                        text = tw.items.joinToString(", ") { "${it.productName} x${it.quantity}" },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF92400E),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = SecurityAndFormatUtils.formatRupiah(tx.totalAmount),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF78350F)
+                                    )
+                                    Text(
+                                        text = "BELUM BAYAR",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFD97706)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -425,7 +524,9 @@ fun DashboardScreen(
                                         Text(
                                             text = item.subtitle,
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
@@ -436,7 +537,7 @@ fun DashboardScreen(
             }
         }
 
-        // Recent Transactions Section
+        // Recent Paid Transactions Section
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -453,7 +554,7 @@ fun DashboardScreen(
                 }
             }
 
-            if (recentTransactions.isEmpty()) {
+            if (recentPaidTransactions.isEmpty()) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -473,12 +574,12 @@ fun DashboardScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Belum ada transaksi tercatat.",
+                            text = "Belum ada riwayat billing lunas.",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Tekan tombol Transaksi untuk melayani pelanggan pertama.",
+                            text = "Tekan Pesan Menu untuk membuat Billing 1.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -486,7 +587,7 @@ fun DashboardScreen(
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    recentTransactions.forEach { tw ->
+                    recentPaidTransactions.forEach { tw ->
                         val tx = tw.transaction
                         val isCancelled = tx.status == "CANCELLED"
                         Card(
@@ -506,12 +607,12 @@ fun DashboardScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = tx.invoiceNumber,
+                                        text = tx.billingDisplay,
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = "${SecurityAndFormatUtils.formatDateTime(tx.timestamp)} • ${tx.paymentMethod}",
+                                        text = "${SecurityAndFormatUtils.formatDateTime(tx.timestamp)} • ${tw.items.sumOf { it.quantity }} item • ${tx.paymentMethod}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -524,8 +625,9 @@ fun DashboardScreen(
                                         color = if (isCancelled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                     )
                                     Text(
-                                        text = if (isCancelled) "DIBATALKAN" else "SELESAI",
+                                        text = if (isCancelled) "DIBATALKAN" else "LUNAS",
                                         style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
                                         color = if (isCancelled) MaterialTheme.colorScheme.error else Color(0xFF059669)
                                     )
                                 }

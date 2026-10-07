@@ -24,7 +24,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -36,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -59,11 +62,13 @@ fun CategoryScreen(
     categories: List<CategoryEntity>,
     products: List<ProductEntity>,
     onSaveCategory: (CategoryEntity) -> Unit,
-    onDeleteCategory: (CategoryEntity) -> Unit
+    onMoveCategoryProducts: (CategoryEntity, CategoryEntity) -> Unit,
+    onDeleteCategory: (CategoryEntity, CategoryEntity?) -> Unit
 ) {
     var editingCategory by remember { mutableStateOf<CategoryEntity?>(null) }
     var isAddingNew by remember { mutableStateOf(false) }
     var categoryToDelete by remember { mutableStateOf<CategoryEntity?>(null) }
+    var categoryToMoveFrom by remember { mutableStateOf<CategoryEntity?>(null) }
 
     val productCountByCategory = remember(products) {
         products.groupingBy { it.categoryId }.eachCount()
@@ -84,23 +89,130 @@ fun CategoryScreen(
         )
     }
 
+    if (categoryToMoveFrom != null) {
+        val fromCat = categoryToMoveFrom!!
+        val otherCategories = categories.filter { it.id != fromCat.id }
+        AlertDialog(
+            onDismissRequest = { categoryToMoveFrom = null },
+            title = { Text("Pindahkan Menu dari '${fromCat.name}'", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (otherCategories.isEmpty()) {
+                        Text("Buat kategori lain terlebih dahulu untuk memindahkan menu.")
+                    } else {
+                        Text(
+                            "Pilih kategori tujuan untuk memindahkan semua menu dari '${fromCat.name}':",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        otherCategories.forEach { targetCat ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onMoveCategoryProducts(fromCat, targetCat)
+                                        categoryToMoveFrom = null
+                                    }
+                            ) {
+                                Text(
+                                    text = targetCat.name,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { categoryToMoveFrom = null }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+
     if (categoryToDelete != null) {
         val target = categoryToDelete!!
+        val countInCat = productCountByCategory[target.id] ?: 0
+        val otherCategories = categories.filter { it.id != target.id }
+        var selectedMoveTarget by remember(target) {
+            mutableStateOf(otherCategories.firstOrNull())
+        }
+
         AlertDialog(
             onDismissRequest = { categoryToDelete = null },
-            title = { Text("Hapus Kategori?", fontWeight = FontWeight.Bold) },
+            icon = {
+                if (countInCat > 0) {
+                    Icon(
+                        imageVector = Icons.Default.WarningAmber,
+                        contentDescription = null,
+                        tint = Color(0xFFD97706)
+                    )
+                }
+            },
+            title = {
+                Text(
+                    text = if (countInCat > 0) "Peringatan: Kategori Masih Memiliki Menu" else "Hapus Kategori?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
-                Text("Apakah Anda yakin ingin menghapus kategori '${target.name}'?")
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (countInCat == 0) {
+                        Text("Apakah Anda yakin ingin menghapus kategori '${target.name}'?")
+                    } else {
+                        Text(
+                            "Kategori '${target.name}' masih memiliki $countInCat produk/menu. Produk tidak akan dihapus. Pilih kategori tujuan untuk memindahkan $countInCat menu tersebut terlebih dahulu:",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (otherCategories.isEmpty()) {
+                            Text(
+                                "Tidak ada kategori lain yang tersedia. Silakan tambah kategori baru terlebih dahulu sebelum menghapus kategori ini.",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        } else {
+                            otherCategories.forEach { dest ->
+                                val isSelected = selectedMoveTarget?.id == dest.id
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceVariant
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { selectedMoveTarget = dest }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(dest.name, fontWeight = FontWeight.Bold)
+                                        if (isSelected) {
+                                            Text("Tujuan Pindah", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onDeleteCategory(target)
+                        onDeleteCategory(target, selectedMoveTarget)
                         categoryToDelete = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    enabled = countInCat == 0 || selectedMoveTarget != null,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.testTag("btn_confirm_delete_category")
                 ) {
-                    Text("Ya, Hapus")
+                    Text(if (countInCat > 0) "Pindahkan Menu & Hapus" else "Ya, Hapus")
                 }
             },
             dismissButton = {
@@ -157,7 +269,10 @@ fun CategoryScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .size(48.dp)
@@ -180,7 +295,7 @@ fun CategoryScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "$count Produk terdaftar",
+                                    text = "$count Menu dalam kategori ini",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -188,6 +303,15 @@ fun CategoryScreen(
                         }
 
                         Row {
+                            if (count > 0 && categories.size > 1) {
+                                IconButton(onClick = { categoryToMoveFrom = cat }) {
+                                    Icon(
+                                        Icons.Default.DriveFileMove,
+                                        contentDescription = "Pindahkan Menu ke Kategori Lain",
+                                        tint = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
                             IconButton(onClick = { editingCategory = cat }) {
                                 Icon(Icons.Default.Edit, contentDescription = "Edit Kategori", tint = MaterialTheme.colorScheme.primary)
                             }
@@ -218,7 +342,7 @@ private fun CategoryFormDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = if (initialCategory.id == 0L) "Tambah Kategori" else "Edit Kategori",
+                text = if (initialCategory.id == 0L) "Tambah Kategori Menu" else "Ubah Kategori Menu",
                 fontWeight = FontWeight.Bold
             )
         },
@@ -231,6 +355,7 @@ private fun CategoryFormDialog(
                         errorMsg = null
                     },
                     label = { Text("Nama Kategori *") },
+                    placeholder = { Text("Contoh: Makanan, Minuman, Snack, Dessert") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()

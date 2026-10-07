@@ -1,16 +1,16 @@
 <resources>
     <string name="app_name">KasirKu</string>
     <string name="nav_dashboard">Beranda</string>
-    <string name="nav_pos">Kasir</string>
-    <string name="nav_products">Produk</string>
+    <string name="nav_pos">Pesan</string>
+    <string name="nav_payment">Pembayaran</string>
+    <string name="nav_products">Menu</string>
     <string name="nav_categories">Kategori</string>
-    <string name="nav_stock">Stok</string>
     <string name="nav_history">Riwayat</string>
     <string name="nav_customers">Pelanggan</string>
     <string name="nav_reports">Laporan</string>
     <string name="nav_settings">Pengaturan</string>
-    <string name="btn_pay">BAYAR</string>
+    <string name="btn_send_order">KIRIM PESANAN</string>
+    <string name="btn_pay_finish">BAYAR &amp; SELESAIKAN</string>
     <string name="btn_open_settings">Buka Pengaturan</string>
-    <string name="permission_camera_rationale">Izin Kamera diperlukan untuk memindai barcode produk secara langsung menggunakan kamera HP Anda.</string>
     <string name="permission_bluetooth_rationale">Izin Bluetooth diperlukan untuk mencari dan menghubungkan aplikasi KasirKu ke printer thermal Bluetooth.</string>
 </resources>

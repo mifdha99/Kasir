@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -31,12 +30,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
@@ -66,8 +64,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -79,8 +75,6 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.data.CategoryEntity
 import com.example.data.ProductEntity
-import com.example.service.BarcodeScannerService
-import com.example.ui.components.BarcodeScannerDialog
 import com.example.util.SecurityAndFormatUtils
 import com.example.viewmodel.ProductSortOption
 
@@ -89,6 +83,7 @@ fun ProductScreen(
     products: List<ProductEntity>,
     categories: List<CategoryEntity>,
     onSaveProduct: (ProductEntity) -> Unit,
+    onMoveProductCategory: (ProductEntity, CategoryEntity) -> Unit,
     onDeleteProduct: (ProductEntity) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -99,21 +94,20 @@ fun ProductScreen(
     var editingProduct by remember { mutableStateOf<ProductEntity?>(null) }
     var isAddingNew by remember { mutableStateOf(false) }
     var productToDelete by remember { mutableStateOf<ProductEntity?>(null) }
+    var productToMoveCategory by remember { mutableStateOf<ProductEntity?>(null) }
 
     val filteredAndSorted = remember(products, searchQuery, selectedCategoryId, sortOption) {
         val filtered = products.filter { p ->
             (selectedCategoryId == null || p.categoryId == selectedCategoryId) &&
                 (searchQuery.isBlank() ||
                     p.name.contains(searchQuery, ignoreCase = true) ||
-                    p.sku.contains(searchQuery, ignoreCase = true) ||
-                    p.barcode.contains(searchQuery, ignoreCase = true) ||
-                    p.categoryName.contains(searchQuery, ignoreCase = true))
+                    p.categoryName.contains(searchQuery, ignoreCase = true) ||
+                    p.description.contains(searchQuery, ignoreCase = true))
         }
         when (sortOption) {
             ProductSortOption.NAME -> filtered.sortedBy { it.name.lowercase() }
             ProductSortOption.PRICE_ASC -> filtered.sortedBy { it.sellPrice }
             ProductSortOption.PRICE_DESC -> filtered.sortedByDescending { it.sellPrice }
-            ProductSortOption.STOCK_ASC -> filtered.sortedBy { it.stock }
             ProductSortOption.NEWEST -> filtered.sortedByDescending { it.createdAt }
         }
     }
@@ -124,7 +118,7 @@ fun ProductScreen(
             initialProduct = editingProduct ?: ProductEntity(
                 name = "",
                 categoryId = defaultCat?.id ?: 0L,
-                categoryName = defaultCat?.name ?: "Umum"
+                categoryName = defaultCat?.name ?: "Makanan"
             ),
             categories = categories,
             onDismiss = {
@@ -139,13 +133,60 @@ fun ProductScreen(
         )
     }
 
+    if (productToMoveCategory != null) {
+        val targetProduct = productToMoveCategory!!
+        AlertDialog(
+            onDismissRequest = { productToMoveCategory = null },
+            title = { Text("Pindahkan Kategori Menu", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Pilih kategori tujuan untuk '${targetProduct.name}' (Saat ini: ${targetProduct.categoryName}):",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    categories.forEach { cat ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (cat.id == targetProduct.categoryId) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onMoveProductCategory(targetProduct, cat)
+                                    productToMoveCategory = null
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(cat.name, fontWeight = FontWeight.Bold)
+                                if (cat.id == targetProduct.categoryId) {
+                                    Text("Saat Ini", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { productToMoveCategory = null }) {
+                    Text("Tutup")
+                }
+            }
+        )
+    }
+
     if (productToDelete != null) {
         val target = productToDelete!!
         AlertDialog(
             onDismissRequest = { productToDelete = null },
-            title = { Text("Hapus Produk?", fontWeight = FontWeight.Bold) },
+            title = { Text("Hapus Menu?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Apakah Anda yakin ingin menghapus '${target.name}' dari daftar produk?")
+                Text("Apakah Anda yakin ingin menghapus '${target.name}' dari daftar menu?")
             },
             confirmButton = {
                 Button(
@@ -178,9 +219,9 @@ fun ProductScreen(
                     modifier = Modifier.padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Tambah Produk")
+                    Icon(Icons.Default.Add, contentDescription = "Tambah Menu")
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Tambah Produk", fontWeight = FontWeight.Bold)
+                    Text("Tambah Menu", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -206,7 +247,7 @@ fun ProductScreen(
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
-                            placeholder = { Text("Cari nama, SKU, barcode...") },
+                            placeholder = { Text("Cari nama makanan atau minuman...") },
                             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                             trailingIcon = {
                                 if (searchQuery.isNotEmpty()) {
@@ -279,8 +320,6 @@ fun ProductScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(filteredAndSorted, key = { it.id }) { product ->
-                    val margin = product.sellPrice - product.buyPrice
-                    val isLow = product.stock <= product.minStock
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -349,59 +388,38 @@ fun ProductScreen(
                                 }
 
                                 Text(
-                                    text = "${product.categoryName} • SKU: ${product.sku.ifBlank { "-" }} • Barcode: ${product.barcode.ifBlank { "-" }}",
+                                    text = "Kategori: ${product.categoryName} • Satuan: ${product.unit}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
                                 Spacer(modifier = Modifier.height(4.dp))
 
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column {
-                                        Text("Harga Jual", style = MaterialTheme.typography.labelSmall)
-                                        Text(
-                                            SecurityAndFormatUtils.formatRupiah(product.sellPrice),
-                                            fontWeight = FontWeight.ExtraBold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                    Column {
-                                        Text("Harga Beli", style = MaterialTheme.typography.labelSmall)
-                                        Text(
-                                            SecurityAndFormatUtils.formatRupiah(product.buyPrice),
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                    Column {
-                                        Text("Laba/Unit", style = MaterialTheme.typography.labelSmall)
-                                        Text(
-                                            SecurityAndFormatUtils.formatRupiah(margin),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF059669),
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
                                 Text(
-                                    text = "Stok: ${product.stock} ${product.unit} (Min: ${product.minStock})",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (isLow) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = if (isLow) FontWeight.Bold else FontWeight.Normal
+                                    text = SecurityAndFormatUtils.formatRupiah(product.sellPrice),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
+
+                                if (product.description.isNotBlank()) {
+                                    Text(
+                                        text = product.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
 
                             Column {
                                 IconButton(onClick = { editingProduct = product }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Edit Produk", tint = MaterialTheme.colorScheme.primary)
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit Menu", tint = MaterialTheme.colorScheme.primary)
+                                }
+                                IconButton(onClick = { productToMoveCategory = product }) {
+                                    Icon(Icons.Default.DriveFileMove, contentDescription = "Pindah Kategori", tint = MaterialTheme.colorScheme.secondary)
                                 }
                                 IconButton(onClick = { productToDelete = product }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Hapus Produk", tint = MaterialTheme.colorScheme.error)
+                                    Icon(Icons.Default.Delete, contentDescription = "Hapus Menu", tint = MaterialTheme.colorScheme.error)
                                 }
                             }
                         }
@@ -423,24 +441,19 @@ private fun ProductFormDialog(
     val context = LocalContext.current
 
     var name by remember { mutableStateOf(initialProduct.name) }
-    var sku by remember { mutableStateOf(initialProduct.sku) }
-    var barcode by remember { mutableStateOf(initialProduct.barcode) }
-    var buyPriceText by remember {
-        mutableStateOf(if (initialProduct.buyPrice == 0.0) "" else initialProduct.buyPrice.toLong().toString())
-    }
     var sellPriceText by remember {
         mutableStateOf(if (initialProduct.sellPrice == 0.0) "" else initialProduct.sellPrice.toLong().toString())
     }
-    var stockText by remember { mutableStateOf(initialProduct.stock.toString()) }
-    var minStockText by remember { mutableStateOf(initialProduct.minStock.toString()) }
-    var unit by remember { mutableStateOf(initialProduct.unit.ifBlank { "Pcs" }) }
+    var buyPriceText by remember {
+        mutableStateOf(if (initialProduct.buyPrice == 0.0) "" else initialProduct.buyPrice.toLong().toString())
+    }
+    var unit by remember { mutableStateOf(initialProduct.unit.ifBlank { "Porsi" }) }
     var selectedCategoryId by remember { mutableStateOf(initialProduct.categoryId) }
     var selectedCategoryName by remember { mutableStateOf(initialProduct.categoryName) }
     var description by remember { mutableStateOf(initialProduct.description) }
     var imageUri by remember { mutableStateOf(initialProduct.imageUri) }
     var isActive by remember { mutableStateOf(initialProduct.isActive) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
-    var showScanner by remember { mutableStateOf(false) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -457,23 +470,7 @@ private fun ProductFormDialog(
         }
     }
 
-    val barcodeBitmap = remember(barcode) {
-        if (barcode.isNotBlank()) {
-            BarcodeScannerService.generateBarcodeBitmap(barcode)
-        } else null
-    }
-
-    if (showScanner) {
-        BarcodeScannerDialog(
-            title = "Scan Barcode Produk",
-            onDismiss = { showScanner = false },
-            onBarcodeScanned = { scanned ->
-                barcode = scanned
-            }
-        )
-    }
-
-    val unitOptions = listOf("Pcs", "Cup", "Botol", "Bungkus", "Porsi", "Pouch", "Kg", "Sak", "Box")
+    val unitOptions = listOf("Porsi", "Gelas", "Cup", "Paket", "Piring", "Mangkok", "Pcs", "Bungkus")
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -495,7 +492,7 @@ private fun ProductFormDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (initialProduct.id == 0L) "Tambah Produk Baru" else "Edit Produk",
+                        text = if (initialProduct.id == 0L) "Tambah Menu Baru" else "Edit Menu & Harga",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -533,7 +530,7 @@ private fun ProductFormDialog(
                         if (imageUri.isNotBlank()) {
                             AsyncImage(
                                 model = Uri.parse(imageUri),
-                                contentDescription = "Foto Produk",
+                                contentDescription = "Foto Menu",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .size(72.dp)
@@ -558,7 +555,7 @@ private fun ProductFormDialog(
                                     )
                                 }
                             ) {
-                                Text("Pilih Foto Produk")
+                                Text("Pilih Foto Menu")
                             }
                             if (imageUri.isNotBlank()) {
                                 TextButton(onClick = { imageUri = "" }) {
@@ -571,7 +568,7 @@ private fun ProductFormDialog(
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it; errorMsg = null },
-                        label = { Text("Nama Produk *") },
+                        label = { Text("Nama Makanan / Minuman *") },
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -579,102 +576,28 @@ private fun ProductFormDialog(
                     )
 
                     // Category Selection
-                    Text("Kategori Produk", style = MaterialTheme.typography.labelLarge)
+                    Text("Kategori Menu", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         categories.forEach { cat ->
                             FilterChip(
-                                selected = selectedCategoryId == cat.id || selectedCategoryName == cat.name,
+                                selected = selectedCategoryId == cat.id || selectedCategoryName.equals(cat.name, ignoreCase = true),
                                 onClick = {
                                     selectedCategoryId = cat.id
                                     selectedCategoryName = cat.name
                                 },
-                                label = { Text(cat.name) }
+                                label = { Text(cat.name, fontWeight = FontWeight.SemiBold) }
                             )
                         }
                     }
 
-                    // SKU & Barcode with Scanner + Auto-Generator
+                    // Sell Price & Optional Buy Price
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OutlinedTextField(
-                            value = sku,
-                            onValueChange = { sku = it },
-                            label = { Text("Kode SKU") },
-                            placeholder = { Text("Contoh: MN-005") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = barcode,
-                            onValueChange = { barcode = it },
-                            label = { Text("Barcode") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1.2f)
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { showScanner = true },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Scan Kamera")
-                        }
-                        OutlinedButton(
-                            onClick = { barcode = BarcodeScannerService.generateRandomBarcode() },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Buat Barcode")
-                        }
-                    }
-
-                    if (barcodeBitmap != null) {
-                        Surface(
-                            color = Color.White,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(8.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Image(
-                                    bitmap = barcodeBitmap.asImageBitmap(),
-                                    contentDescription = "Preview Barcode",
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(60.dp)
-                                )
-                                Text(barcode, color = Color.Black, style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                    }
-
-                    // Buy Price & Sell Price
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = buyPriceText,
-                            onValueChange = { buyPriceText = it.filter { ch -> ch.isDigit() } },
-                            label = { Text("Harga Beli / Modal (Rp)") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
                         OutlinedTextField(
                             value = sellPriceText,
                             onValueChange = { sellPriceText = it.filter { ch -> ch.isDigit() } },
@@ -685,25 +608,10 @@ private fun ProductFormDialog(
                                 .weight(1f)
                                 .testTag("input_product_sell_price")
                         )
-                    }
-
-                    // Stock & Minimum Stock
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
                         OutlinedTextField(
-                            value = stockText,
-                            onValueChange = { stockText = it.filter { ch -> ch.isDigit() || ch == '-' } },
-                            label = { Text("Stok Saat Ini") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = minStockText,
-                            onValueChange = { minStockText = it.filter { ch -> ch.isDigit() } },
-                            label = { Text("Stok Minimum") },
+                            value = buyPriceText,
+                            onValueChange = { buyPriceText = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("Harga Modal (Opsional)") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
@@ -714,7 +622,7 @@ private fun ProductFormDialog(
                     OutlinedTextField(
                         value = unit,
                         onValueChange = { unit = it },
-                        label = { Text("Satuan (Pcs, Cup, Kg, Botol, dll)") },
+                        label = { Text("Satuan (Porsi, Gelas, Cup, Paket)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -732,7 +640,7 @@ private fun ProductFormDialog(
                     OutlinedTextField(
                         value = description,
                         onValueChange = { description = it },
-                        label = { Text("Deskripsi Produk") },
+                        label = { Text("Keterangan Menu (Opsional)") },
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -743,9 +651,9 @@ private fun ProductFormDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Status Produk Aktif", fontWeight = FontWeight.Bold)
+                            Text("Status Menu Tersedia", fontWeight = FontWeight.Bold)
                             Text(
-                                "Jika nonaktif, produk tidak tampil di layar kasir",
+                                "Jika nonaktif, menu tidak tampil di layar pemesanan",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -763,26 +671,20 @@ private fun ProductFormDialog(
                     Button(
                         onClick = {
                             if (name.trim().isEmpty()) {
-                                errorMsg = "Nama produk wajib diisi!"
+                                errorMsg = "Nama menu wajib diisi!"
                                 return@Button
                             }
                             val sell = sellPriceText.toDoubleOrNull() ?: 0.0
                             val buy = buyPriceText.toDoubleOrNull() ?: 0.0
-                            val stk = stockText.toIntOrNull() ?: 0
-                            val minStk = minStockText.toIntOrNull()?.coerceAtLeast(0) ?: 5
 
                             onSave(
                                 initialProduct.copy(
                                     name = name.trim(),
-                                    sku = sku.trim(),
-                                    barcode = barcode.trim(),
                                     buyPrice = buy,
                                     sellPrice = sell,
-                                    stock = stk,
-                                    minStock = minStk,
-                                    unit = unit.trim().ifEmpty { "Pcs" },
+                                    unit = unit.trim().ifEmpty { "Porsi" },
                                     categoryId = selectedCategoryId,
-                                    categoryName = selectedCategoryName.ifBlank { "Umum" },
+                                    categoryName = selectedCategoryName.ifBlank { "Makanan" },
                                     description = description.trim(),
                                     imageUri = imageUri,
                                     isActive = isActive
@@ -796,7 +698,7 @@ private fun ProductFormDialog(
                             .height(50.dp)
                             .testTag("btn_save_product")
                     ) {
-                        Text("Simpan Produk", fontWeight = FontWeight.Bold)
+                        Text("Simpan Menu", fontWeight = FontWeight.Bold)
                     }
                 }
             }

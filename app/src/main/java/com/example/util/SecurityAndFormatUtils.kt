@@ -1,5 +1,6 @@
 package com.example.util
 
+import org.json.JSONArray
 import java.security.MessageDigest
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
@@ -37,7 +38,7 @@ object SecurityAndFormatUtils {
     }
 
     fun formatDate(timestamp: Long): String {
-        val sdf = SimpleDateFormat("dd MMM yyyy", indonesiaLocale)
+        val sdf = SimpleDateFormat("d MMMM yyyy", indonesiaLocale)
         return sdf.format(Date(timestamp))
     }
 
@@ -47,13 +48,64 @@ object SecurityAndFormatUtils {
     }
 
     fun formatDateTime(timestamp: Long): String {
-        val sdf = SimpleDateFormat("dd MMM yyyy, HH:mm", indonesiaLocale)
+        val sdf = SimpleDateFormat("d MMMM yyyy - HH:mm", indonesiaLocale)
+        return sdf.format(Date(timestamp))
+    }
+
+    fun formatReceiptDateTime(timestamp: Long): String {
+        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm", indonesiaLocale)
         return sdf.format(Date(timestamp))
     }
 
     fun formatInvoiceDate(timestamp: Long): String {
         val sdf = SimpleDateFormat("yyyyMMdd", indonesiaLocale)
         return sdf.format(Date(timestamp))
+    }
+
+    fun formatBillingLabel(billingNumber: Int): String {
+        val safeNum = if (billingNumber > 0) billingNumber else 1
+        return "Billing $safeNum"
+    }
+
+    fun encodePortionNotes(notes: List<String>): String {
+        val arr = JSONArray()
+        notes.forEach { arr.put(it.trim()) }
+        return arr.toString()
+    }
+
+    fun decodePortionNotes(json: String, fallbackNote: String = "", quantity: Int = 1): List<String> {
+        if (json.isNotBlank()) {
+            try {
+                val arr = JSONArray(json)
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    list.add(arr.optString(i, "").trim())
+                }
+                if (list.isNotEmpty()) {
+                    return normalizePortionNotes(list, quantity)
+                }
+            } catch (_: Exception) {
+            }
+        }
+        val initial = if (fallbackNote.isNotBlank()) listOf(fallbackNote.trim()) else emptyList()
+        return normalizePortionNotes(initial, quantity)
+    }
+
+    fun normalizePortionNotes(existing: List<String>, quantity: Int): List<String> {
+        val count = quantity.coerceAtLeast(1)
+        return List(count) { idx ->
+            existing.getOrNull(idx)?.trim().orEmpty()
+        }
+    }
+
+    fun summarizePortionNotes(notes: List<String>): String {
+        val nonEmpty = notes.mapIndexedNotNull { idx, note ->
+            val clean = note.trim()
+            if (clean.isEmpty()) null
+            else if (notes.size == 1) clean
+            else "Porsi ${idx + 1}: $clean"
+        }
+        return nonEmpty.joinToString("; ")
     }
 
     fun getStartOfDay(timestamp: Long = System.currentTimeMillis()): Long {

@@ -15,7 +15,7 @@ import com.example.util.SecurityAndFormatUtils
 data class CategoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val iconName: String = "ShoppingBag",
+    val iconName: String = "Restaurant",
     val colorHex: String = "#0F766E",
     val createdAt: Long = System.currentTimeMillis()
 )
@@ -24,23 +24,17 @@ data class CategoryEntity(
     tableName = "products",
     indices = [
         Index(value = ["categoryId"]),
-        Index(value = ["barcode"]),
-        Index(value = ["sku"]),
         Index(value = ["name"])
     ]
 )
 data class ProductEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val sku: String = "",
-    val barcode: String = "",
     val buyPrice: Double = 0.0,
     val sellPrice: Double = 0.0,
-    val stock: Int = 0,
-    val minStock: Int = 5,
-    val unit: String = "Pcs",
+    val unit: String = "Porsi",
     val categoryId: Long = 0,
-    val categoryName: String = "Umum",
+    val categoryName: String = "Makanan",
     val description: String = "",
     val imageUri: String = "",
     val isActive: Boolean = true,
@@ -70,7 +64,6 @@ data class CashierUserEntity(
     val pinHash: String = SecurityAndFormatUtils.hashPin("1234"),
     val role: String = "ADMIN", // "ADMIN" or "KASIR"
     val canGiveDiscount: Boolean = true,
-    val canManageStock: Boolean = true,
     val canVoidTransaction: Boolean = true,
     val canViewReports: Boolean = true,
     val canManageSettings: Boolean = true,
@@ -81,7 +74,7 @@ data class CashierUserEntity(
 @Entity(
     tableName = "transactions",
     indices = [
-        Index(value = ["invoiceNumber"], unique = true),
+        Index(value = ["billingNumber"]),
         Index(value = ["timestamp"]),
         Index(value = ["customerId"]),
         Index(value = ["status"])
@@ -89,7 +82,8 @@ data class CashierUserEntity(
 )
 data class TransactionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val invoiceNumber: String,
+    val billingNumber: Int = 1,
+    val invoiceNumber: String = "Billing 1",
     val timestamp: Long = System.currentTimeMillis(),
     val cashierId: Long = 1,
     val cashierName: String = "Admin Kasir",
@@ -107,10 +101,14 @@ data class TransactionEntity(
     val amountPaid: Double = 0.0,
     val changeAmount: Double = 0.0,
     val notes: String = "",
-    val status: String = "COMPLETED", // COMPLETED, CANCELLED
+    val isSentToKitchen: Boolean = true,
+    val status: String = "UNPAID", // "UNPAID" (BELUM BAYAR), "PAID" (LUNAS), "CANCELLED" (DIBATALKAN)
     val cancelReason: String = "",
     val cancelledAt: Long? = null
-)
+) {
+    val billingDisplay: String
+        get() = if (billingNumber > 0) "Billing $billingNumber" else invoiceNumber
+}
 
 @Entity(
     tableName = "transaction_items",
@@ -129,15 +127,18 @@ data class TransactionItemEntity(
     val transactionId: Long = 0,
     val productId: Long,
     val productName: String,
-    val sku: String = "",
-    val categoryName: String = "Umum",
+    val categoryName: String = "Makanan",
     val buyPrice: Double = 0.0,
     val sellPrice: Double = 0.0,
     val quantity: Int = 1,
-    val unit: String = "Pcs",
+    val unit: String = "Porsi",
     val itemNote: String = "",
+    val portionNotesJson: String = "[]",
     val subtotal: Double = 0.0
-)
+) {
+    val portionNotes: List<String>
+        get() = SecurityAndFormatUtils.decodePortionNotes(portionNotesJson, itemNote, quantity)
+}
 
 data class TransactionWithItems(
     @Embedded val transaction: TransactionEntity,
@@ -148,57 +149,34 @@ data class TransactionWithItems(
     val items: List<TransactionItemEntity>
 )
 
-@Entity(
-    tableName = "stock_movements",
-    indices = [Index(value = ["productId"]), Index(value = ["timestamp"])]
-)
-data class StockMovementEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val productId: Long,
-    val productName: String,
-    val type: String, // "IN" (Stok Masuk), "OUT" (Stok Keluar), "ADJUSTMENT" (Penyesuaian), "SALE" (Penjualan), "REFUND" (Pembatalan)
-    val quantityChange: Int,
-    val previousStock: Int,
-    val newStock: Int,
-    val note: String = "",
-    val referenceInvoice: String = "",
-    val timestamp: Long = System.currentTimeMillis(),
-    val userName: String = "Admin"
-)
-
 @Entity(tableName = "settings")
 data class StoreSettingsEntity(
     @PrimaryKey val id: Int = 1,
-    val storeName: String = "Toko KasirKu Nusantara",
+    val storeName: String = "Resto & Warung KasirKu",
     val storeLogoUri: String = "",
-    val storeAddress: String = "Jl. Merdeka Raya No. 88, Jakarta",
+    val storeAddress: String = "Jl. Merdeka Raya No. 88",
     val storePhone: String = "0812-3456-7890",
     val storeEmail: String = "halo@kasirku.id",
     val storeNpwp: String = "",
-    val receiptFooter: String = "Terima kasih telah berbelanja!\nBarang yang sudah dibeli tidak dapat ditukar/dikembalikan.",
+    val receiptFooter: String = "TERIMA KASIH\nSelamat Menikmati Hidangan Kami",
     // Transaction settings
     val enableDiscount: Boolean = true,
     val enableTax: Boolean = false,
-    val defaultTaxPercent: Double = 11.0,
+    val defaultTaxPercent: Double = 10.0,
     val defaultServiceFee: Double = 0.0,
     val enableRounding: Boolean = false,
-    val autoInvoiceNumber: Boolean = true,
-    val invoicePrefix: String = "INV",
     // Printer settings
     val defaultPrinterName: String = "",
     val defaultPrinterAddress: String = "",
     val paperSizeMm: Int = 58, // 58 or 80
     val printCopies: Int = 1,
     val autoPrintReceipt: Boolean = false,
+    val autoPrintKitchenTicket: Boolean = false,
     // Appearance settings
     val themeMode: String = "LIGHT", // "LIGHT", "DARK", "SYSTEM"
     val textScale: Float = 1.0f, // 0.9f, 1.0f, 1.15f
     val productViewMode: String = "GRID", // "GRID" or "LIST"
     val gridColumns: Int = 2, // 2 or 3
-    // Stock settings
-    val enableLowStockAlert: Boolean = true,
-    val allowNegativeStock: Boolean = false,
-    val autoReduceStock: Boolean = true,
     // Security settings
     val requirePinOnStartup: Boolean = false,
     val protectAdminSettings: Boolean = true,
@@ -217,10 +195,17 @@ data class PrinterDeviceEntity(
 data class CartItem(
     val product: ProductEntity,
     val quantity: Int = 1,
-    val note: String = ""
+    val portionNotes: List<String> = List(quantity.coerceAtLeast(1)) { "" }
 ) {
+    val normalizedPortionNotes: List<String>
+        get() = SecurityAndFormatUtils.normalizePortionNotes(portionNotes, quantity)
+
+    val noteSummary: String
+        get() = SecurityAndFormatUtils.summarizePortionNotes(normalizedPortionNotes)
+
     val subtotal: Double
         get() = product.sellPrice * quantity
+
     val totalCost: Double
         get() = product.buyPrice * quantity
 }

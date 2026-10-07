@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,7 +54,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.data.ProductEntity
 import com.example.data.TransactionWithItems
 import com.example.util.SecurityAndFormatUtils
 import com.example.viewmodel.ReportFilterPeriod
@@ -64,7 +62,6 @@ import com.example.viewmodel.ReportFilterPeriod
 @Composable
 fun ReportScreen(
     transactions: List<TransactionWithItems>,
-    products: List<ProductEntity>,
     onExportCsv: (Uri, String, String, List<TransactionWithItems>) -> Unit,
     onExportPdf: (String, List<TransactionWithItems>) -> Unit
 ) {
@@ -77,27 +74,27 @@ fun ReportScreen(
 
     val now = System.currentTimeMillis()
 
-    // Quick Dashboard Benchmarks (always visible at top)
-    val completedAll = remember(transactions) {
-        transactions.filter { it.transaction.status == "COMPLETED" }
+    // Quick Dashboard Benchmarks (only PAID / LUNAS transactions)
+    val paidAll = remember(transactions) {
+        transactions.filter { it.transaction.status == "PAID" }
     }
-    val salesToday = remember(completedAll) {
+    val salesToday = remember(paidAll) {
         val s = SecurityAndFormatUtils.getStartOfDay(now)
         val e = SecurityAndFormatUtils.getEndOfDay(now)
-        completedAll.filter { it.transaction.timestamp in s..e }.sumOf { it.transaction.totalAmount }
+        paidAll.filter { it.transaction.timestamp in s..e }.sumOf { it.transaction.totalAmount }
     }
-    val salesYesterday = remember(completedAll) {
+    val salesYesterday = remember(paidAll) {
         val s = SecurityAndFormatUtils.getStartOfYesterday()
         val e = SecurityAndFormatUtils.getEndOfYesterday()
-        completedAll.filter { it.transaction.timestamp in s..e }.sumOf { it.transaction.totalAmount }
+        paidAll.filter { it.transaction.timestamp in s..e }.sumOf { it.transaction.totalAmount }
     }
-    val salesThisWeek = remember(completedAll) {
+    val salesThisWeek = remember(paidAll) {
         val s = SecurityAndFormatUtils.getStartOfCurrentWeek()
-        completedAll.filter { it.transaction.timestamp >= s }.sumOf { it.transaction.totalAmount }
+        paidAll.filter { it.transaction.timestamp >= s }.sumOf { it.transaction.totalAmount }
     }
-    val salesThisMonth = remember(completedAll) {
+    val salesThisMonth = remember(paidAll) {
         val s = SecurityAndFormatUtils.getStartOfCurrentMonth()
-        completedAll.filter { it.transaction.timestamp >= s }.sumOf { it.transaction.totalAmount }
+        paidAll.filter { it.transaction.timestamp >= s }.sumOf { it.transaction.totalAmount }
     }
 
     val (startMs, endMs) = remember(selectedPeriod, customStartMs, customEndMs) {
@@ -118,34 +115,34 @@ fun ReportScreen(
     val filteredTransactions = remember(transactions, startMs, endMs) {
         transactions.filter { it.transaction.timestamp in startMs..endMs }
     }
-    val filteredCompleted = remember(filteredTransactions) {
-        filteredTransactions.filter { it.transaction.status == "COMPLETED" }
+    val filteredPaid = remember(filteredTransactions) {
+        filteredTransactions.filter { it.transaction.status == "PAID" }
+    }
+    val filteredUnpaid = remember(filteredTransactions) {
+        filteredTransactions.filter { it.transaction.status == "UNPAID" }
     }
 
-    val periodTotalSales = remember(filteredCompleted) {
-        filteredCompleted.sumOf { it.transaction.totalAmount }
+    val periodTotalSales = remember(filteredPaid) {
+        filteredPaid.sumOf { it.transaction.totalAmount }
     }
-    val periodTotalCost = remember(filteredCompleted) {
-        filteredCompleted.sumOf { it.transaction.totalCost }
+    val periodTotalCost = remember(filteredPaid) {
+        filteredPaid.sumOf { it.transaction.totalCost }
     }
-    val periodTotalDiscount = remember(filteredCompleted) {
-        filteredCompleted.sumOf { it.transaction.discountAmount }
+    val periodTotalDiscount = remember(filteredPaid) {
+        filteredPaid.sumOf { it.transaction.discountAmount }
     }
-    val periodTotalTax = remember(filteredCompleted) {
-        filteredCompleted.sumOf { it.transaction.taxAmount }
+    val periodTotalTax = remember(filteredPaid) {
+        filteredPaid.sumOf { it.transaction.taxAmount }
     }
     val periodEstimatedProfit = remember(periodTotalSales, periodTotalCost, periodTotalTax) {
         periodTotalSales - periodTotalCost - periodTotalTax
     }
-    val totalInventoryValue = remember(products) {
-        products.sumOf { it.buyPrice * it.stock.coerceAtLeast(0) }
-    }
 
-    // Best selling products in filtered period
-    val topProducts = remember(filteredCompleted) {
+    // Best selling menu items in filtered period
+    val topProducts = remember(filteredPaid) {
         data class ProdAgg(val name: String, val qty: Int, val revenue: Double, val profit: Double)
         val map = mutableMapOf<String, ProdAgg>()
-        for (tw in filteredCompleted) {
+        for (tw in filteredPaid) {
             for (item in tw.items) {
                 val cur = map[item.productName]
                 val itemProfit = (item.sellPrice - item.buyPrice) * item.quantity
@@ -164,12 +161,12 @@ fun ReportScreen(
     }
 
     // Best selling categories in filtered period
-    val topCategories = remember(filteredCompleted) {
+    val topCategories = remember(filteredPaid) {
         data class CatAgg(val categoryName: String, val qty: Int, val revenue: Double)
         val map = mutableMapOf<String, CatAgg>()
-        for (tw in filteredCompleted) {
+        for (tw in filteredPaid) {
             for (item in tw.items) {
-                val cat = item.categoryName.ifBlank { "Umum" }
+                val cat = item.categoryName.ifBlank { "Makanan" }
                 val cur = map[cat]
                 if (cur == null) {
                     map[cat] = CatAgg(cat, item.quantity, item.subtotal)
@@ -185,8 +182,8 @@ fun ReportScreen(
     }
 
     // Payment method breakdown
-    val paymentBreakdown = remember(filteredCompleted) {
-        filteredCompleted.groupBy { it.transaction.paymentMethod }
+    val paymentBreakdown = remember(filteredPaid) {
+        filteredPaid.groupBy { it.transaction.paymentMethod }
             .map { (method, list) ->
                 Triple(method, list.size, list.sumOf { it.transaction.totalAmount })
             }
@@ -197,7 +194,7 @@ fun ReportScreen(
         contract = ActivityResultContracts.CreateDocument("text/csv")
     ) { uri ->
         if (uri != null) {
-            onExportCsv(uri, "Laporan Lengkap", periodLabel, filteredTransactions)
+            onExportCsv(uri, "Laporan Penjualan Resto", periodLabel, filteredTransactions)
         }
     }
 
@@ -248,9 +245,8 @@ fun ReportScreen(
     val reportTabs = listOf(
         "Laporan Penjualan",
         "Laporan Keuntungan",
-        "Produk & Kategori Terlaris",
-        "Metode Pembayaran",
-        "Laporan Stok"
+        "Menu & Kategori Terlaris",
+        "Metode Pembayaran"
     )
 
     LazyColumn(
@@ -263,7 +259,7 @@ fun ReportScreen(
         // Quick Overview: Hari ini, Kemarin, Minggu ini, Bulan ini
         item {
             Text(
-                text = "Ringkasan Penjualan Cepat",
+                text = "Ringkasan Penjualan Lunas",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -387,12 +383,12 @@ fun ReportScreen(
                         fontWeight = FontWeight.Bold
                     )
                     HorizontalDivider()
-                    ReportRow("Jumlah Transaksi Selesai", "${filteredCompleted.size} Transaksi")
-                    ReportRow("Total Omzet Penjualan", SecurityAndFormatUtils.formatRupiah(periodTotalSales))
+                    ReportRow("Jumlah Billing Lunas", "${filteredPaid.size} Billing")
+                    ReportRow("Billing Belum Bayar", "${filteredUnpaid.size} Billing")
+                    ReportRow("Total Omzet Penjualan (Lunas)", SecurityAndFormatUtils.formatRupiah(periodTotalSales))
                     ReportRow("Total Diskon Diberikan", SecurityAndFormatUtils.formatRupiah(periodTotalDiscount))
                     ReportRow("Total Pajak Terkumpul", SecurityAndFormatUtils.formatRupiah(periodTotalTax))
                     ReportRow("Estimasi Keuntungan Bersih", SecurityAndFormatUtils.formatRupiah(periodEstimatedProfit), isHighlight = true)
-                    ReportRow("Total Nilai Stok Persediaan", SecurityAndFormatUtils.formatRupiah(totalInventoryValue))
                 }
             }
         }
@@ -417,12 +413,12 @@ fun ReportScreen(
         when (selectedReportTab) {
             0 -> {
                 // Laporan Penjualan
-                if (filteredCompleted.isEmpty()) {
+                if (filteredPaid.isEmpty()) {
                     item {
-                        EmptyReportCard("Belum ada transaksi penjualan selesai pada periode ini.")
+                        EmptyReportCard("Belum ada transaksi lunas pada periode ini.")
                     }
                 } else {
-                    items(filteredCompleted, key = { it.transaction.id }) { tw ->
+                    items(filteredPaid, key = { it.transaction.id }) { tw ->
                         val t = tw.transaction
                         Card(
                             shape = RoundedCornerShape(14.dp),
@@ -437,7 +433,7 @@ fun ReportScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column {
-                                    Text(t.invoiceNumber, fontWeight = FontWeight.Bold)
+                                    Text(t.billingDisplay, fontWeight = FontWeight.Bold)
                                     Text(
                                         "${SecurityAndFormatUtils.formatDateTime(t.timestamp)} • ${t.paymentMethod}",
                                         style = MaterialTheme.typography.bodySmall,
@@ -468,9 +464,9 @@ fun ReportScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text("Analisis Laba Rugi Penjualan", fontWeight = FontWeight.Bold)
-                            ReportRow("Penjualan Kotor (Subtotal)", SecurityAndFormatUtils.formatRupiah(filteredCompleted.sumOf { it.transaction.subtotal }))
+                            ReportRow("Penjualan Kotor (Subtotal)", SecurityAndFormatUtils.formatRupiah(filteredPaid.sumOf { it.transaction.subtotal }))
                             ReportRow("Potongan Diskon", "-${SecurityAndFormatUtils.formatRupiah(periodTotalDiscount)}")
-                            ReportRow("Harga Pokok Penjualan (Modal)", "-${SecurityAndFormatUtils.formatRupiah(periodTotalCost)}")
+                            ReportRow("Modal Pokok Menu", "-${SecurityAndFormatUtils.formatRupiah(periodTotalCost)}")
                             HorizontalDivider()
                             ReportRow("Estimasi Laba Bersih", SecurityAndFormatUtils.formatRupiah(periodEstimatedProfit), isHighlight = true)
                         }
@@ -492,7 +488,7 @@ fun ReportScreen(
                             Column {
                                 Text(prodAgg.name, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "Terjual: ${prodAgg.qty} • Omzet: ${SecurityAndFormatUtils.formatRupiah(prodAgg.revenue)}",
+                                    "Terjual: ${prodAgg.qty} porsi • Omzet: ${SecurityAndFormatUtils.formatRupiah(prodAgg.revenue)}",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -510,7 +506,7 @@ fun ReportScreen(
             }
 
             2 -> {
-                // Produk Terlaris & Kategori Terlaris
+                // Menu Terlaris & Kategori Terlaris
                 item {
                     Text("Kategori Terlaris", fontWeight = FontWeight.Bold)
                 }
@@ -529,7 +525,7 @@ fun ReportScreen(
                                     .padding(12.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("${cat.categoryName} (${cat.qty} item)", fontWeight = FontWeight.Bold)
+                                Text("${cat.categoryName} (${cat.qty} porsi)", fontWeight = FontWeight.Bold)
                                 Text(
                                     SecurityAndFormatUtils.formatRupiah(cat.revenue),
                                     fontWeight = FontWeight.ExtraBold,
@@ -542,10 +538,10 @@ fun ReportScreen(
 
                 item {
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("Produk Terlaris", fontWeight = FontWeight.Bold)
+                    Text("Menu Makanan & Minuman Terlaris", fontWeight = FontWeight.Bold)
                 }
                 if (topProducts.isEmpty()) {
-                    item { EmptyReportCard("Belum ada data produk terlaris.") }
+                    item { EmptyReportCard("Belum ada data menu terlaris.") }
                 } else {
                     items(topProducts) { prod ->
                         Card(
@@ -561,7 +557,7 @@ fun ReportScreen(
                             ) {
                                 Column {
                                     Text(prod.name, fontWeight = FontWeight.Bold)
-                                    Text("Terjual: ${prod.qty} unit", style = MaterialTheme.typography.bodySmall)
+                                    Text("Terjual: ${prod.qty} porsi", style = MaterialTheme.typography.bodySmall)
                                 }
                                 Text(
                                     SecurityAndFormatUtils.formatRupiah(prod.revenue),
@@ -577,7 +573,7 @@ fun ReportScreen(
             3 -> {
                 // Laporan Metode Pembayaran
                 if (paymentBreakdown.isEmpty()) {
-                    item { EmptyReportCard("Belum ada transaksi untuk metode pembayaran.") }
+                    item { EmptyReportCard("Belum ada transaksi lunas untuk metode pembayaran.") }
                 } else {
                     items(paymentBreakdown) { (method, count, amount) ->
                         Card(
@@ -594,47 +590,11 @@ fun ReportScreen(
                             ) {
                                 Column {
                                     Text(method, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                    Text("$count Transaksi", style = MaterialTheme.typography.bodySmall)
+                                    Text("$count Billing Lunas", style = MaterialTheme.typography.bodySmall)
                                 }
                                 Text(
                                     SecurityAndFormatUtils.formatRupiah(amount),
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            4 -> {
-                // Laporan Stok
-                items(products, key = { it.id }) { p ->
-                    val valModal = p.buyPrice * p.stock.coerceAtLeast(0)
-                    Card(
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(p.name, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Stok: ${p.stock} ${p.unit} • Harga Beli: ${SecurityAndFormatUtils.formatRupiah(p.buyPrice)}",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text("Nilai Stok", style = MaterialTheme.typography.labelSmall)
-                                Text(
-                                    SecurityAndFormatUtils.formatRupiah(valModal),
                                     fontWeight = FontWeight.ExtraBold,
                                     color = MaterialTheme.colorScheme.primary
                                 )

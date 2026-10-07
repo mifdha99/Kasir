@@ -24,7 +24,7 @@ import org.robolectric.annotation.Config
 class ExampleRobolectricTest {
 
     @Test
-    fun `read app_name from context and verify atomic checkout and refund`() = runTest {
+    fun `verify restaurant order to kitchen and separate billing payment flow`() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("KasirKu", appName)
@@ -35,65 +35,89 @@ class ExampleRobolectricTest {
         val dao = db.kasirDao()
         val repo = KasirRepository(dao)
 
-        dao.saveStoreSettings(StoreSettingsEntity(id = 1, storeName = "Toko KasirKu"))
-        val catId = repo.saveCategory(CategoryEntity(name = "Minuman")).getOrThrow()
-        val prodId = repo.saveProduct(
+        dao.saveStoreSettings(StoreSettingsEntity(id = 1, storeName = "Resto KasirKu"))
+        val foodCatId = repo.saveCategory(CategoryEntity(name = "Makanan")).getOrThrow()
+        val drinkCatId = repo.saveCategory(CategoryEntity(name = "Minuman")).getOrThrow()
+
+        val mieGorengId = repo.saveProduct(
             ProductEntity(
-                name = "Es Kopi Susu",
-                sku = "KP-01",
-                barcode = "899000111222",
+                name = "Mie Goreng",
                 buyPrice = 8000.0,
                 sellPrice = 15000.0,
-                stock = 20,
-                minStock = 5,
-                unit = "Cup",
-                categoryId = catId,
-                categoryName = "Minuman"
-            ),
-            userName = "Admin"
+                unit = "Porsi",
+                categoryId = foodCatId,
+                categoryName = "Makanan"
+            )
         ).getOrThrow()
 
-        val savedProduct = dao.getProductById(prodId)!!
-        assertEquals(20, savedProduct.stock)
+        val esTehId = repo.saveProduct(
+            ProductEntity(
+                name = "Es Teh Manis",
+                buyPrice = 2000.0,
+                sellPrice = 5000.0,
+                unit = "Gelas",
+                categoryId = drinkCatId,
+                categoryName = "Minuman"
+            )
+        ).getOrThrow()
 
-        // Execute checkout of 3 cups paid with 50,000 cash
-        val cashier = CashierUserEntity(id = 1, name = "Kasir Test")
-        val checkoutResult = repo.processCheckout(
-            cartItems = listOf(CartItem(product = savedProduct, quantity = 3, note = "Less sugar")),
+        val mieGoreng = dao.getProductById(mieGorengId)!!
+        val esTeh = dao.getProductById(esTehId)!!
+
+        // 1. PROSES PESAN: Send Order to Kitchen (Status = UNPAID / BELUM BAYAR)
+        val cashier = CashierUserEntity(id = 1, name = "Kasir Resto")
+        val sentOrder = repo.sendOrderToKitchen(
+            existingTransactionId = null,
+            billingNumber = 1,
+            cartItems = listOf(
+                CartItem(
+                    product = mieGoreng,
+                    quantity = 2,
+                    portionNotes = listOf("tidak pedas, tanpa sayur", "pedas sedang")
+                ),
+                CartItem(
+                    product = esTeh,
+                    quantity = 2,
+                    portionNotes = listOf("es sedikit", "normal")
+                )
+            ),
             cashier = cashier,
             customer = null,
-            discountAmount = 5000.0,
-            taxPercentage = 0.0,
-            serviceFee = 0.0,
-            paymentMethod = "Tunai",
-            amountPaid = 50000.0,
-            notes = "Meja 1"
+            notes = "Meja 4"
         ).getOrThrow()
 
-        assertEquals(40000.0, checkoutResult.transaction.totalAmount, 0.01)
-        assertEquals(10000.0, checkoutResult.transaction.changeAmount, 0.01)
+        assertEquals("UNPAID", sentOrder.transaction.status)
+        assertEquals("Billing 1", sentOrder.transaction.billingDisplay)
+        assertEquals(40000.0, sentOrder.transaction.totalAmount, 0.01)
 
-        // Verify stock decreased from 20 to 17
-        val afterSaleProduct = dao.getProductById(prodId)!!
-        assertEquals(17, afterSaleProduct.stock)
+        // Verify kitchen ticket contains per-portion notes
+        val kitchenTicket = BluetoothPrinterService.formatKitchenTicketText(sentOrder, 58)
+        assertTrue(kitchenTicket.contains("BILLING 1"))
+        assertTrue(kitchenTicket.contains("Porsi 1: tidak pedas, tanpa sayur"))
+        assertTrue(kitchenTicket.contains("Porsi 2: pedas sedang"))
+
+        // 2. PROSES BAYAR: Complete payment for Billing 1 with Rp50.000 cash
+        val paidOrder = repo.processBillingPayment(
+            transactionId = sentOrder.transaction.id,
+            cashier = cashier,
+            discountAmount = 0.0,
+            serviceFee = 0.0,
+            paymentMethod = "Tunai",
+            amountPaid = 50000.0
+        ).getOrThrow()
+
+        assertEquals("PAID", paidOrder.transaction.status)
+        assertEquals(40000.0, paidOrder.transaction.totalAmount, 0.01)
+        assertEquals(10000.0, paidOrder.transaction.changeAmount, 0.01)
 
         // Verify receipt formatting contains key information
         val receipt = BluetoothPrinterService.formatReceiptText(
-            txWithItems = checkoutResult,
-            settings = StoreSettingsEntity(storeName = "Toko KasirKu", paperSizeMm = 58)
+            txWithItems = paidOrder,
+            settings = StoreSettingsEntity(storeName = "Resto KasirKu", paperSizeMm = 58)
         )
-        assertTrue(receipt.contains("TOKO KASIRKU"))
-        assertTrue(receipt.contains("Es Kopi Susu"))
-
-        // Cancel/Refund transaction and verify stock returns to 20
-        repo.cancelTransaction(
-            transactionId = checkoutResult.transaction.id,
-            cancelReason = "Salah pesanan",
-            cancelledBy = "Admin"
-        ).getOrThrow()
-
-        val afterRefundProduct = dao.getProductById(prodId)!!
-        assertEquals(20, afterRefundProduct.stock)
+        assertTrue(receipt.contains("RESTO KASIRKU"))
+        assertTrue(receipt.contains("Mie Goreng"))
+        assertTrue(receipt.contains("KEMBALI"))
 
         db.close()
     }

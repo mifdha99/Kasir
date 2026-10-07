@@ -15,7 +15,6 @@ import com.example.data.CustomerEntity
 import com.example.data.KasirDao
 import com.example.data.PrinterDeviceEntity
 import com.example.data.ProductEntity
-import com.example.data.StockMovementEntity
 import com.example.data.StoreSettingsEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionItemEntity
@@ -30,13 +29,14 @@ import java.io.FileOutputStream
 
 object BackupAndExportService {
 
-    private const val BACKUP_MAGIC = "KasirKu_POS_Backup_v1"
+    private const val BACKUP_MAGIC_V1 = "KasirKu_POS_Backup_v1"
+    private const val BACKUP_MAGIC_V2 = "KasirKu_Resto_Backup_v2"
 
     // --- FULL DATABASE JSON BACKUP ---
     suspend fun createBackupJsonString(dao: KasirDao): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val root = JSONObject()
-            root.put("backupFormat", BACKUP_MAGIC)
+            root.put("backupFormat", BACKUP_MAGIC_V2)
             root.put("createdAt", System.currentTimeMillis())
 
             // Settings
@@ -54,20 +54,16 @@ object BackupAndExportService {
                 put("defaultTaxPercent", settings.defaultTaxPercent)
                 put("defaultServiceFee", settings.defaultServiceFee)
                 put("enableRounding", settings.enableRounding)
-                put("autoInvoiceNumber", settings.autoInvoiceNumber)
-                put("invoicePrefix", settings.invoicePrefix)
                 put("defaultPrinterName", settings.defaultPrinterName)
                 put("defaultPrinterAddress", settings.defaultPrinterAddress)
                 put("paperSizeMm", settings.paperSizeMm)
                 put("printCopies", settings.printCopies)
                 put("autoPrintReceipt", settings.autoPrintReceipt)
+                put("autoPrintKitchenTicket", settings.autoPrintKitchenTicket)
                 put("themeMode", settings.themeMode)
                 put("textScale", settings.textScale.toDouble())
                 put("productViewMode", settings.productViewMode)
                 put("gridColumns", settings.gridColumns)
-                put("enableLowStockAlert", settings.enableLowStockAlert)
-                put("allowNegativeStock", settings.allowNegativeStock)
-                put("autoReduceStock", settings.autoReduceStock)
                 put("requirePinOnStartup", settings.requirePinOnStartup)
                 put("protectAdminSettings", settings.protectAdminSettings)
                 put("adminPinHash", settings.adminPinHash)
@@ -96,12 +92,8 @@ object BackupAndExportService {
                     JSONObject().apply {
                         put("id", p.id)
                         put("name", p.name)
-                        put("sku", p.sku)
-                        put("barcode", p.barcode)
                         put("buyPrice", p.buyPrice)
                         put("sellPrice", p.sellPrice)
-                        put("stock", p.stock)
-                        put("minStock", p.minStock)
                         put("unit", p.unit)
                         put("categoryId", p.categoryId)
                         put("categoryName", p.categoryName)
@@ -143,7 +135,6 @@ object BackupAndExportService {
                         put("pinHash", u.pinHash)
                         put("role", u.role)
                         put("canGiveDiscount", u.canGiveDiscount)
-                        put("canManageStock", u.canManageStock)
                         put("canVoidTransaction", u.canVoidTransaction)
                         put("canViewReports", u.canViewReports)
                         put("canManageSettings", u.canManageSettings)
@@ -175,6 +166,7 @@ object BackupAndExportService {
                 txArray.put(
                     JSONObject().apply {
                         put("id", t.id)
+                        put("billingNumber", t.billingNumber)
                         put("invoiceNumber", t.invoiceNumber)
                         put("timestamp", t.timestamp)
                         put("cashierId", t.cashierId)
@@ -193,6 +185,7 @@ object BackupAndExportService {
                         put("amountPaid", t.amountPaid)
                         put("changeAmount", t.changeAmount)
                         put("notes", t.notes)
+                        put("isSentToKitchen", t.isSentToKitchen)
                         put("status", t.status)
                         put("cancelReason", t.cancelReason)
                         if (t.cancelledAt != null) put("cancelledAt", t.cancelledAt)
@@ -210,39 +203,18 @@ object BackupAndExportService {
                         put("transactionId", item.transactionId)
                         put("productId", item.productId)
                         put("productName", item.productName)
-                        put("sku", item.sku)
                         put("categoryName", item.categoryName)
                         put("buyPrice", item.buyPrice)
                         put("sellPrice", item.sellPrice)
                         put("quantity", item.quantity)
                         put("unit", item.unit)
                         put("itemNote", item.itemNote)
+                        put("portionNotesJson", item.portionNotesJson)
                         put("subtotal", item.subtotal)
                     }
                 )
             }
             root.put("transactionItems", itemsArray)
-
-            // Stock Movements
-            val stockArray = JSONArray()
-            dao.getAllStockMovementsSnapshot().forEach { sm ->
-                stockArray.put(
-                    JSONObject().apply {
-                        put("id", sm.id)
-                        put("productId", sm.productId)
-                        put("productName", sm.productName)
-                        put("type", sm.type)
-                        put("quantityChange", sm.quantityChange)
-                        put("previousStock", sm.previousStock)
-                        put("newStock", sm.newStock)
-                        put("note", sm.note)
-                        put("referenceInvoice", sm.referenceInvoice)
-                        put("timestamp", sm.timestamp)
-                        put("userName", sm.userName)
-                    }
-                )
-            }
-            root.put("stockMovements", stockArray)
 
             root.toString(2)
         }
@@ -260,7 +232,7 @@ object BackupAndExportService {
             }
         }
 
-    // --- VALIDATED ATOMIC RESTORE ---
+    // --- VALIDATED ATOMIC RESTORE (Supports both v1 and v2 backup files) ---
     suspend fun restoreFromUri(context: Context, uri: Uri, dao: KasirDao): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -279,11 +251,10 @@ object BackupAndExportService {
                 }
 
                 val magic = root.optString("backupFormat", "")
-                if (magic != BACKUP_MAGIC) {
-                    throw IllegalArgumentException("File ini bukan file backup resmi KasirKu POS.")
+                if (magic != BACKUP_MAGIC_V1 && magic != BACKUP_MAGIC_V2) {
+                    throw IllegalArgumentException("File ini bukan file backup resmi KasirKu.")
                 }
 
-                // Parse and validate ALL data in memory BEFORE modifying existing database
                 val categories = mutableListOf<CategoryEntity>()
                 val catArray = root.optJSONArray("categories") ?: JSONArray()
                 for (i in 0 until catArray.length()) {
@@ -294,7 +265,7 @@ object BackupAndExportService {
                         CategoryEntity(
                             id = obj.getLong("id"),
                             name = name,
-                            iconName = obj.optString("iconName", "ShoppingBag"),
+                            iconName = obj.optString("iconName", "Restaurant"),
                             colorHex = obj.optString("colorHex", "#0F766E"),
                             createdAt = obj.optLong("createdAt", System.currentTimeMillis())
                         )
@@ -311,15 +282,11 @@ object BackupAndExportService {
                         ProductEntity(
                             id = obj.getLong("id"),
                             name = name,
-                            sku = obj.optString("sku", ""),
-                            barcode = obj.optString("barcode", ""),
                             buyPrice = obj.optDouble("buyPrice", 0.0).coerceAtLeast(0.0),
                             sellPrice = obj.optDouble("sellPrice", 0.0).coerceAtLeast(0.0),
-                            stock = obj.optInt("stock", 0),
-                            minStock = obj.optInt("minStock", 5).coerceAtLeast(0),
-                            unit = obj.optString("unit", "Pcs"),
+                            unit = obj.optString("unit", "Porsi"),
                             categoryId = obj.optLong("categoryId", 0L),
-                            categoryName = obj.optString("categoryName", "Umum"),
+                            categoryName = obj.optString("categoryName", "Makanan"),
                             description = obj.optString("description", ""),
                             imageUri = obj.optString("imageUri", ""),
                             isActive = obj.optBoolean("isActive", true),
@@ -358,7 +325,6 @@ object BackupAndExportService {
                             pinHash = obj.optString("pinHash", SecurityAndFormatUtils.hashPin("1234")),
                             role = obj.optString("role", "ADMIN"),
                             canGiveDiscount = obj.optBoolean("canGiveDiscount", true),
-                            canManageStock = obj.optBoolean("canManageStock", true),
                             canVoidTransaction = obj.optBoolean("canVoidTransaction", true),
                             canViewReports = obj.optBoolean("canViewReports", true),
                             canManageSettings = obj.optBoolean("canManageSettings", true),
@@ -375,32 +341,28 @@ object BackupAndExportService {
                 val restoredSettings = if (settingsObj != null) {
                     StoreSettingsEntity(
                         id = 1,
-                        storeName = settingsObj.optString("storeName", "Toko KasirKu"),
+                        storeName = settingsObj.optString("storeName", "Resto & Warung KasirKu"),
                         storeLogoUri = settingsObj.optString("storeLogoUri", ""),
                         storeAddress = settingsObj.optString("storeAddress", ""),
                         storePhone = settingsObj.optString("storePhone", ""),
                         storeEmail = settingsObj.optString("storeEmail", ""),
                         storeNpwp = settingsObj.optString("storeNpwp", ""),
-                        receiptFooter = settingsObj.optString("receiptFooter", "Terima kasih!"),
+                        receiptFooter = settingsObj.optString("receiptFooter", "TERIMA KASIH"),
                         enableDiscount = settingsObj.optBoolean("enableDiscount", true),
                         enableTax = settingsObj.optBoolean("enableTax", false),
-                        defaultTaxPercent = settingsObj.optDouble("defaultTaxPercent", 11.0),
+                        defaultTaxPercent = settingsObj.optDouble("defaultTaxPercent", 10.0),
                         defaultServiceFee = settingsObj.optDouble("defaultServiceFee", 0.0),
                         enableRounding = settingsObj.optBoolean("enableRounding", false),
-                        autoInvoiceNumber = settingsObj.optBoolean("autoInvoiceNumber", true),
-                        invoicePrefix = settingsObj.optString("invoicePrefix", "INV"),
                         defaultPrinterName = settingsObj.optString("defaultPrinterName", ""),
                         defaultPrinterAddress = settingsObj.optString("defaultPrinterAddress", ""),
                         paperSizeMm = settingsObj.optInt("paperSizeMm", 58),
                         printCopies = settingsObj.optInt("printCopies", 1),
                         autoPrintReceipt = settingsObj.optBoolean("autoPrintReceipt", false),
+                        autoPrintKitchenTicket = settingsObj.optBoolean("autoPrintKitchenTicket", false),
                         themeMode = settingsObj.optString("themeMode", "LIGHT"),
                         textScale = settingsObj.optDouble("textScale", 1.0).toFloat(),
                         productViewMode = settingsObj.optString("productViewMode", "GRID"),
                         gridColumns = settingsObj.optInt("gridColumns", 2),
-                        enableLowStockAlert = settingsObj.optBoolean("enableLowStockAlert", true),
-                        allowNegativeStock = settingsObj.optBoolean("allowNegativeStock", false),
-                        autoReduceStock = settingsObj.optBoolean("autoReduceStock", true),
                         requirePinOnStartup = settingsObj.optBoolean("requirePinOnStartup", false),
                         protectAdminSettings = settingsObj.optBoolean("protectAdminSettings", true),
                         adminPinHash = settingsObj.optString("adminPinHash", SecurityAndFormatUtils.hashPin("1234"))
@@ -429,10 +391,15 @@ object BackupAndExportService {
                 val txArray = root.optJSONArray("transactions") ?: JSONArray()
                 for (i in 0 until txArray.length()) {
                     val obj = txArray.getJSONObject(i)
+                    val id = obj.getLong("id")
+                    val billingNum = obj.optInt("billingNumber", id.toInt().coerceAtLeast(1))
+                    val rawStatus = obj.optString("status", "PAID")
+                    val normalizedStatus = if (rawStatus == "COMPLETED") "PAID" else rawStatus
                     transactions.add(
                         TransactionEntity(
-                            id = obj.getLong("id"),
-                            invoiceNumber = obj.getString("invoiceNumber"),
+                            id = id,
+                            billingNumber = billingNum,
+                            invoiceNumber = "Billing $billingNum",
                             timestamp = obj.getLong("timestamp"),
                             cashierId = obj.optLong("cashierId", 1L),
                             cashierName = obj.optString("cashierName", "Kasir"),
@@ -450,7 +417,8 @@ object BackupAndExportService {
                             amountPaid = obj.optDouble("amountPaid", 0.0),
                             changeAmount = obj.optDouble("changeAmount", 0.0),
                             notes = obj.optString("notes", ""),
-                            status = obj.optString("status", "COMPLETED"),
+                            isSentToKitchen = obj.optBoolean("isSentToKitchen", true),
+                            status = normalizedStatus,
                             cancelReason = obj.optString("cancelReason", ""),
                             cancelledAt = if (obj.has("cancelledAt") && !obj.isNull("cancelledAt")) obj.getLong("cancelledAt") else null
                         )
@@ -467,40 +435,18 @@ object BackupAndExportService {
                             transactionId = obj.getLong("transactionId"),
                             productId = obj.getLong("productId"),
                             productName = obj.getString("productName"),
-                            sku = obj.optString("sku", ""),
-                            categoryName = obj.optString("categoryName", "Umum"),
+                            categoryName = obj.optString("categoryName", "Makanan"),
                             buyPrice = obj.optDouble("buyPrice", 0.0),
                             sellPrice = obj.optDouble("sellPrice", 0.0),
                             quantity = obj.optInt("quantity", 1),
-                            unit = obj.optString("unit", "Pcs"),
+                            unit = obj.optString("unit", "Porsi"),
                             itemNote = obj.optString("itemNote", ""),
+                            portionNotesJson = obj.optString("portionNotesJson", "[]"),
                             subtotal = obj.optDouble("subtotal", 0.0)
                         )
                     )
                 }
 
-                val stockMovements = mutableListOf<StockMovementEntity>()
-                val smArray = root.optJSONArray("stockMovements") ?: JSONArray()
-                for (i in 0 until smArray.length()) {
-                    val obj = smArray.getJSONObject(i)
-                    stockMovements.add(
-                        StockMovementEntity(
-                            id = obj.getLong("id"),
-                            productId = obj.getLong("productId"),
-                            productName = obj.getString("productName"),
-                            type = obj.getString("type"),
-                            quantityChange = obj.getInt("quantityChange"),
-                            previousStock = obj.getInt("previousStock"),
-                            newStock = obj.getInt("newStock"),
-                            note = obj.optString("note", ""),
-                            referenceInvoice = obj.optString("referenceInvoice", ""),
-                            timestamp = obj.getLong("timestamp"),
-                            userName = obj.optString("userName", "Admin")
-                        )
-                    )
-                }
-
-                // Execute atomic restore only after all validation passed
                 dao.restoreFullDatabaseAtomic(
                     categories = categories,
                     products = products,
@@ -509,32 +455,27 @@ object BackupAndExportService {
                     settings = restoredSettings,
                     printers = printers,
                     transactions = transactions,
-                    transactionItems = txItems,
-                    stockMovements = stockMovements
+                    transactionItems = txItems
                 )
 
-                "Restore berhasil! (${products.size} produk, ${transactions.size} transaksi, ${customers.size} pelanggan dipulihkan)."
+                "Restore berhasil! (${products.size} menu, ${transactions.size} billing dipulihkan)."
             }
         }
 
-    // --- PRODUCT CSV EXPORT & IMPORT ---
+    // --- PRODUCT CSV EXPORT & IMPORT (WITHOUT BARCODE OR STOCK) ---
     suspend fun exportProductsCsvToUri(context: Context, uri: Uri, dao: KasirDao): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val products = dao.getAllProductsSnapshot()
                 val sb = StringBuilder()
-                sb.appendLine("Nama Produk,SKU,Barcode,Kategori,Harga Beli,Harga Jual,Stok,Stok Minimum,Satuan,Status Aktif,Deskripsi")
+                sb.appendLine("Nama Menu,Kategori,Harga Beli,Harga Jual,Satuan,Status Aktif,Deskripsi")
                 for (p in products) {
                     sb.appendLine(
                         listOf(
                             escapeCsv(p.name),
-                            escapeCsv(p.sku),
-                            escapeCsv(p.barcode),
                             escapeCsv(p.categoryName),
                             p.buyPrice.toLong().toString(),
                             p.sellPrice.toLong().toString(),
-                            p.stock.toString(),
-                            p.minStock.toString(),
                             escapeCsv(p.unit),
                             if (p.isActive) "AKTIF" else "NONAKTIF",
                             escapeCsv(p.description)
@@ -544,8 +485,8 @@ object BackupAndExportService {
                 context.contentResolver.openOutputStream(uri)?.use { out ->
                     out.write(sb.toString().toByteArray(Charsets.UTF_8))
                     out.flush()
-                } ?: throw IllegalStateException("Gagal menulis file CSV produk.")
-                "Berhasil mengekspor ${products.size} produk ke file CSV."
+                } ?: throw IllegalStateException("Gagal menulis file CSV menu.")
+                "Berhasil mengekspor ${products.size} menu ke file CSV."
             }
         }
 
@@ -557,7 +498,7 @@ object BackupAndExportService {
                 } ?: throw IllegalStateException("File CSV tidak dapat dibaca.")
 
                 if (lines.size <= 1) {
-                    throw IllegalArgumentException("File CSV kosong atau tidak memiliki baris data produk.")
+                    throw IllegalArgumentException("File CSV kosong atau tidak memiliki baris data menu.")
                 }
 
                 val existingCategories = dao.getAllCategoriesSnapshot().associateBy { it.name.lowercase() }.toMutableMap()
@@ -571,16 +512,12 @@ object BackupAndExportService {
                     val name = cols.getOrNull(0)?.trim().orEmpty()
                     if (name.isEmpty()) continue
 
-                    val sku = cols.getOrNull(1)?.trim().orEmpty()
-                    val barcode = cols.getOrNull(2)?.trim().orEmpty()
-                    val catName = cols.getOrNull(3)?.trim()?.ifEmpty { "Umum" } ?: "Umum"
-                    val buyPrice = cols.getOrNull(4)?.trim()?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-                    val sellPrice = cols.getOrNull(5)?.trim()?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
-                    val stock = cols.getOrNull(6)?.trim()?.toIntOrNull() ?: 0
-                    val minStock = cols.getOrNull(7)?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 5
-                    val unit = cols.getOrNull(8)?.trim()?.ifEmpty { "Pcs" } ?: "Pcs"
-                    val isActive = cols.getOrNull(9)?.trim()?.uppercase() != "NONAKTIF"
-                    val desc = cols.getOrNull(10)?.trim().orEmpty()
+                    val catName = cols.getOrNull(1)?.trim()?.ifEmpty { "Makanan" } ?: "Makanan"
+                    val buyPrice = cols.getOrNull(2)?.trim()?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+                    val sellPrice = cols.getOrNull(3)?.trim()?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+                    val unit = cols.getOrNull(4)?.trim()?.ifEmpty { "Porsi" } ?: "Porsi"
+                    val isActive = cols.getOrNull(5)?.trim()?.uppercase() != "NONAKTIF"
+                    val desc = cols.getOrNull(6)?.trim().orEmpty()
 
                     val category = existingCategories[catName.lowercase()] ?: run {
                         val newCatId = dao.insertCategory(CategoryEntity(name = catName))
@@ -592,12 +529,8 @@ object BackupAndExportService {
                     dao.insertProduct(
                         ProductEntity(
                             name = name,
-                            sku = sku,
-                            barcode = barcode,
                             buyPrice = buyPrice,
                             sellPrice = sellPrice,
-                            stock = stock,
-                            minStock = minStock,
                             unit = unit,
                             categoryId = category.id,
                             categoryName = category.name,
@@ -609,9 +542,9 @@ object BackupAndExportService {
                 }
 
                 if (importedCount == 0) {
-                    throw IllegalArgumentException("Tidak ada produk valid yang ditemukan dalam file CSV.")
+                    throw IllegalArgumentException("Tidak ada menu valid yang ditemukan dalam file CSV.")
                 }
-                "Berhasil mengimpor $importedCount produk dari CSV!"
+                "Berhasil mengimpor $importedCount menu dari CSV!"
             }
         }
 
@@ -619,10 +552,9 @@ object BackupAndExportService {
     fun buildReportCsv(
         reportTitle: String,
         periodLabel: String,
-        transactions: List<TransactionWithItems>,
-        products: List<ProductEntity>
+        transactions: List<TransactionWithItems>
     ): String {
-        val completed = transactions.filter { it.transaction.status == "COMPLETED" }
+        val completed = transactions.filter { it.transaction.status == "PAID" || it.transaction.status == "COMPLETED" }
         val totalSales = completed.sumOf { it.transaction.totalAmount }
         val totalCost = completed.sumOf { it.transaction.totalCost }
         val totalDiscount = completed.sumOf { it.transaction.discountAmount }
@@ -630,26 +562,30 @@ object BackupAndExportService {
         val estimatedProfit = totalSales - totalCost - totalTax
 
         val sb = StringBuilder()
-        sb.appendLine("LAPORAN KASIRKU POS - $reportTitle")
+        sb.appendLine("LAPORAN KASIRKU RESTO - $reportTitle")
         sb.appendLine("Periode,${escapeCsv(periodLabel)}")
         sb.appendLine("Tanggal Cetak,${escapeCsv(SecurityAndFormatUtils.formatDateTime(System.currentTimeMillis()))}")
         sb.appendLine()
         sb.appendLine("RINGKASAN KEUANGAN")
-        sb.appendLine("Jumlah Transaksi Selesai,${completed.size}")
+        sb.appendLine("Jumlah Billing Lunas,${completed.size}")
         sb.appendLine("Total Penjualan (Omzet),${totalSales.toLong()}")
         sb.appendLine("Total Modal (HPP),${totalCost.toLong()}")
         sb.appendLine("Total Diskon,${totalDiscount.toLong()}")
         sb.appendLine("Total Pajak,${totalTax.toLong()}")
         sb.appendLine("Estimasi Keuntungan Bersih,${estimatedProfit.toLong()}")
         sb.appendLine()
-        sb.appendLine("DAFTAR TRANSAKSI")
-        sb.appendLine("No. Transaksi,Tanggal,Jam,Kasir,Pelanggan,Metode Bayar,Subtotal,Diskon,Pajak,Total Akhir,Modal,Keuntungan,Status")
+        sb.appendLine("DAFTAR BILLING & TRANSAKSI")
+        sb.appendLine("Nomor Billing,Tanggal,Jam,Kasir,Pelanggan,Metode Bayar,Subtotal,Diskon,Pajak,Total Akhir,Status")
         for (tw in transactions) {
             val t = tw.transaction
-            val profit = if (t.status == "COMPLETED") (t.totalAmount - t.totalCost - t.taxAmount) else 0.0
+            val statusIndo = when (t.status) {
+                "PAID", "COMPLETED" -> "LUNAS"
+                "UNPAID" -> "BELUM BAYAR"
+                else -> "DIBATALKAN"
+            }
             sb.appendLine(
                 listOf(
-                    escapeCsv(t.invoiceNumber),
+                    escapeCsv(t.billingDisplay),
                     escapeCsv(SecurityAndFormatUtils.formatDate(t.timestamp)),
                     escapeCsv(SecurityAndFormatUtils.formatTime(t.timestamp)),
                     escapeCsv(t.cashierName),
@@ -659,28 +595,7 @@ object BackupAndExportService {
                     t.discountAmount.toLong().toString(),
                     t.taxAmount.toLong().toString(),
                     t.totalAmount.toLong().toString(),
-                    t.totalCost.toLong().toString(),
-                    profit.toLong().toString(),
-                    t.status
-                ).joinToString(",")
-            )
-        }
-        sb.appendLine()
-        sb.appendLine("LAPORAN STOK & NILAI PERSEDIAAN")
-        sb.appendLine("Nama Produk,SKU,Kategori,Stok Saat Ini,Stok Minimum,Satuan,Harga Beli,Harga Jual,Nilai Modal Stok")
-        for (p in products) {
-            val stockVal = p.buyPrice * p.stock.coerceAtLeast(0)
-            sb.appendLine(
-                listOf(
-                    escapeCsv(p.name),
-                    escapeCsv(p.sku),
-                    escapeCsv(p.categoryName),
-                    p.stock.toString(),
-                    p.minStock.toString(),
-                    escapeCsv(p.unit),
-                    p.buyPrice.toLong().toString(),
-                    p.sellPrice.toLong().toString(),
-                    stockVal.toLong().toString()
+                    statusIndo
                 ).joinToString(",")
             )
         }
@@ -725,8 +640,8 @@ object BackupAndExportService {
             pdfDocument.finishPage(page)
 
             val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
-            val safeInvoice = txWithItems.transaction.invoiceNumber.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-            val outFile = File(exportDir, "Struk_$safeInvoice.pdf")
+            val safeBilling = txWithItems.transaction.billingDisplay.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+            val outFile = File(exportDir, "Struk_$safeBilling.pdf")
             FileOutputStream(outFile).use { out ->
                 pdfDocument.writeTo(out)
             }
@@ -740,21 +655,19 @@ object BackupAndExportService {
         context: Context,
         storeName: String,
         periodLabel: String,
-        transactions: List<TransactionWithItems>,
-        products: List<ProductEntity>
+        transactions: List<TransactionWithItems>
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
-            val completed = transactions.filter { it.transaction.status == "COMPLETED" }
+            val completed = transactions.filter { it.transaction.status == "PAID" || it.transaction.status == "COMPLETED" }
             val totalSales = completed.sumOf { it.transaction.totalAmount }
             val totalCost = completed.sumOf { it.transaction.totalCost }
             val totalDiscount = completed.sumOf { it.transaction.discountAmount }
             val totalTax = completed.sumOf { it.transaction.taxAmount }
             val estimatedProfit = totalSales - totalCost - totalTax
-            val totalInventoryValue = products.sumOf { it.buyPrice * it.stock.coerceAtLeast(0) }
 
             val pdfDocument = PdfDocument()
-            val pageWidth = 595 // A4 width in points
-            val pageHeight = 842 // A4 height in points
+            val pageWidth = 595
+            val pageHeight = 842
 
             val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.rgb(15, 118, 110)
@@ -787,7 +700,7 @@ object BackupAndExportService {
                 }
             }
 
-            canvas.drawText("LAPORAN KEUANGAN & PENJUALAN - $storeName", 36f, y, titlePaint)
+            canvas.drawText("LAPORAN PENJUALAN RESTORAN - $storeName", 36f, y, titlePaint)
             y += 20f
             canvas.drawText("Periode: $periodLabel", 36f, y, headerPaint)
             y += 16f
@@ -797,13 +710,12 @@ object BackupAndExportService {
             canvas.drawText("RINGKASAN UTAMA", 36f, y, headerPaint)
             y += 16f
             val summaryLines = listOf(
-                "Total Transaksi Selesai   : ${completed.size} Transaksi",
+                "Total Billing Lunas       : ${completed.size} Billing",
                 "Total Omzet Penjualan     : ${SecurityAndFormatUtils.formatRupiah(totalSales)}",
                 "Total Modal Pokok (HPP)   : ${SecurityAndFormatUtils.formatRupiah(totalCost)}",
                 "Total Diskon Diberikan    : ${SecurityAndFormatUtils.formatRupiah(totalDiscount)}",
                 "Total Pajak Terkumpul     : ${SecurityAndFormatUtils.formatRupiah(totalTax)}",
-                "Estimasi Laba Bersih      : ${SecurityAndFormatUtils.formatRupiah(estimatedProfit)}",
-                "Total Nilai Persediaan    : ${SecurityAndFormatUtils.formatRupiah(totalInventoryValue)}"
+                "Estimasi Laba Bersih      : ${SecurityAndFormatUtils.formatRupiah(estimatedProfit)}"
             )
             for (s in summaryLines) {
                 canvas.drawText(s, 36f, y, bodyPaint)
@@ -815,13 +727,13 @@ object BackupAndExportService {
             y += 16f
             val byPayment = completed.groupBy { it.transaction.paymentMethod }
             if (byPayment.isEmpty()) {
-                canvas.drawText("- Belum ada transaksi selesai pada periode ini.", 36f, y, bodyPaint)
+                canvas.drawText("- Belum ada billing lunas pada periode ini.", 36f, y, bodyPaint)
                 y += 15f
             } else {
                 for ((method, list) in byPayment) {
                     val sum = list.sumOf { it.transaction.totalAmount }
                     canvas.drawText(
-                        "- ${method.padEnd(12)} : ${list.size} trx | ${SecurityAndFormatUtils.formatRupiah(sum)}",
+                        "- ${method.padEnd(12)} : ${list.size} billing | ${SecurityAndFormatUtils.formatRupiah(sum)}",
                         36f,
                         y,
                         bodyPaint
@@ -832,13 +744,18 @@ object BackupAndExportService {
 
             y += 14f
             checkNewPage()
-            canvas.drawText("DAFTAR TRANSAKSI (${transactions.size})", 36f, y, headerPaint)
+            canvas.drawText("DAFTAR BILLING (${transactions.size})", 36f, y, headerPaint)
             y += 16f
 
             for (tw in transactions.take(150)) {
                 checkNewPage()
                 val t = tw.transaction
-                val line = "${t.invoiceNumber.padEnd(18)} | ${SecurityAndFormatUtils.formatDateTime(t.timestamp)} | ${t.paymentMethod.padEnd(8)} | ${SecurityAndFormatUtils.formatRupiah(t.totalAmount).padStart(12)} | ${t.status}"
+                val statusLabel = when (t.status) {
+                    "PAID", "COMPLETED" -> "LUNAS"
+                    "UNPAID" -> "BELUM BAYAR"
+                    else -> "BATAL"
+                }
+                val line = "${t.billingDisplay.padEnd(12)} | ${SecurityAndFormatUtils.formatDateTime(t.timestamp)} | ${t.paymentMethod.padEnd(8)} | ${SecurityAndFormatUtils.formatRupiah(t.totalAmount).padStart(12)} | $statusLabel"
                 canvas.drawText(line.take(90), 36f, y, bodyPaint)
                 y += 14f
             }

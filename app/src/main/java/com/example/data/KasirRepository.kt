@@ -11,10 +11,10 @@ class KasirRepository(private val dao: KasirDao) {
     val users: Flow<List<CashierUserEntity>> = dao.getAllUsers()
     val settings: Flow<StoreSettingsEntity?> = dao.getStoreSettings()
     val printers: Flow<List<PrinterDeviceEntity>> = dao.getAllPrinters()
-    val stockMovements: Flow<List<StockMovementEntity>> = dao.getAllStockMovements()
     val transactionsWithItems: Flow<List<TransactionWithItems>> = dao.getAllTransactionsWithItems()
+    val unpaidBillingsWithItems: Flow<List<TransactionWithItems>> = dao.getUnpaidBillingsWithItems()
 
-    // --- CATEGORY CRUD ---
+    // --- CATEGORY CRUD & PRODUCT MIGRATION ---
     suspend fun saveCategory(category: CategoryEntity): Result<Long> = runCatching {
         val cleanName = category.name.trim()
         if (cleanName.isEmpty()) {
@@ -30,105 +30,85 @@ class KasirRepository(private val dao: KasirDao) {
         }
     }
 
-    suspend fun deleteCategory(category: CategoryEntity): Result<Unit> = runCatching {
-        dao.deleteCategory(category)
+    suspend fun getProductCountInCategory(categoryId: Long): Int {
+        return dao.countProductsInCategory(categoryId)
+    }
+
+    suspend fun moveProductsBetweenCategories(
+        fromCategoryId: Long,
+        targetCategory: CategoryEntity
+    ): Result<Unit> = runCatching {
+        if (fromCategoryId == targetCategory.id) {
+            throw IllegalArgumentException("Kategori tujuan harus berbeda dengan kategori asal.")
+        }
+        dao.moveProductsToCategory(
+            fromCategoryId = fromCategoryId,
+            toCategoryId = targetCategory.id,
+            toCategoryName = targetCategory.name
+        )
+    }
+
+    suspend fun deleteCategoryWithOptionalMove(
+        categoryToDelete: CategoryEntity,
+        moveToCategory: CategoryEntity? = null
+    ): Result<Unit> = runCatching {
+        val count = dao.countProductsInCategory(categoryToDelete.id)
+        if (count > 0) {
+            if (moveToCategory == null) {
+                throw IllegalStateException(
+                    "Kategori '${categoryToDelete.name}' masih memiliki $count menu. Pindahkan menu ke kategori lain terlebih dahulu."
+                )
+            }
+            if (moveToCategory.id == categoryToDelete.id) {
+                throw IllegalArgumentException("Kategori tujuan pemindahan tidak boleh sama dengan kategori yang dihapus.")
+            }
+            dao.moveProductsToCategory(
+                fromCategoryId = categoryToDelete.id,
+                toCategoryId = moveToCategory.id,
+                toCategoryName = moveToCategory.name
+            )
+        }
+        dao.deleteCategory(categoryToDelete)
     }
 
     // --- PRODUCT CRUD ---
-    suspend fun saveProduct(product: ProductEntity, userName: String): Result<Long> = runCatching {
+    suspend fun saveProduct(product: ProductEntity): Result<Long> = runCatching {
         val cleanName = product.name.trim()
         if (cleanName.isEmpty()) {
-            throw IllegalArgumentException("Nama produk tidak boleh kosong.")
+            throw IllegalArgumentException("Nama menu/produk tidak boleh kosong.")
         }
         if (product.buyPrice < 0.0 || product.sellPrice < 0.0) {
-            throw IllegalArgumentException("Harga beli dan harga jual tidak boleh bernilai negatif.")
-        }
-        if (product.minStock < 0) {
-            throw IllegalArgumentException("Stok minimum tidak boleh bernilai negatif.")
-        }
-        val settingsSnap = dao.getStoreSettingsSnapshot() ?: StoreSettingsEntity()
-        if (!settingsSnap.allowNegativeStock && product.stock < 0) {
-            throw IllegalArgumentException("Stok tidak boleh bernilai negatif.")
+            throw IllegalArgumentException("Harga tidak boleh bernilai negatif.")
         }
 
         val now = System.currentTimeMillis()
         val toSave = product.copy(
             name = cleanName,
-            sku = product.sku.trim(),
-            barcode = product.barcode.trim(),
-            unit = product.unit.trim().ifEmpty { "Pcs" },
+            unit = product.unit.trim().ifEmpty { "Porsi" },
             description = product.description.trim(),
             updatedAt = now
         )
 
         if (toSave.id == 0L) {
-            val newId = dao.insertProduct(toSave.copy(createdAt = now))
-            if (toSave.stock != 0) {
-                dao.insertStockMovement(
-                    StockMovementEntity(
-                        productId = newId,
-                        productName = toSave.name,
-                        type = "IN",
-                        quantityChange = toSave.stock,
-                        previousStock = 0,
-                        newStock = toSave.stock,
-                        note = "Stok awal produk baru",
-                        timestamp = now,
-                        userName = userName
-                    )
-                )
-            }
-            newId
+            dao.insertProduct(toSave.copy(createdAt = now))
         } else {
-            val existing = dao.getProductById(toSave.id)
             dao.updateProduct(toSave)
-            if (existing != null && existing.stock != toSave.stock) {
-                val diff = toSave.stock - existing.stock
-                dao.insertStockMovement(
-                    StockMovementEntity(
-                        productId = toSave.id,
-                        productName = toSave.name,
-                        type = "ADJUSTMENT",
-                        quantityChange = diff,
-                        previousStock = existing.stock,
-                        newStock = toSave.stock,
-                        note = "Perubahan stok melalui Edit Produk",
-                        timestamp = now,
-                        userName = userName
-                    )
-                )
-            }
             toSave.id
         }
     }
 
+    suspend fun moveSingleProductToCategory(product: ProductEntity, targetCategory: CategoryEntity): Result<Unit> = runCatching {
+        dao.updateProduct(
+            product.copy(
+                categoryId = targetCategory.id,
+                categoryName = targetCategory.name,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
     suspend fun deleteProduct(product: ProductEntity): Result<Unit> = runCatching {
         dao.deleteProduct(product)
-    }
-
-    suspend fun findProductByBarcodeOrSku(code: String): ProductEntity? {
-        val clean = code.trim()
-        if (clean.isEmpty()) return null
-        return dao.getProductByBarcode(clean) ?: dao.getProductBySku(clean)
-    }
-
-    // --- STOCK ADJUSTMENT ---
-    suspend fun adjustStock(
-        productId: Long,
-        type: String,
-        quantityInput: Int,
-        note: String,
-        userName: String
-    ): Result<Unit> = runCatching {
-        val settingsSnap = dao.getStoreSettingsSnapshot() ?: StoreSettingsEntity()
-        dao.adjustStockAtomic(
-            productId = productId,
-            type = type,
-            quantityInput = quantityInput,
-            note = note.trim(),
-            userName = userName,
-            allowNegativeStock = settingsSnap.allowNegativeStock
-        )
     }
 
     // --- CUSTOMER CRUD ---
@@ -189,7 +169,7 @@ class KasirRepository(private val dao: KasirDao) {
     // --- SETTINGS ---
     suspend fun saveSettings(settings: StoreSettingsEntity): Result<Unit> = runCatching {
         if (settings.storeName.trim().isEmpty()) {
-            throw IllegalArgumentException("Nama toko tidak boleh kosong.")
+            throw IllegalArgumentException("Nama restoran/toko tidak boleh kosong.")
         }
         if (settings.defaultTaxPercent < 0.0 || settings.defaultTaxPercent > 100.0) {
             throw IllegalArgumentException("Persentase pajak harus antara 0% hingga 100%.")
@@ -222,35 +202,54 @@ class KasirRepository(private val dao: KasirDao) {
         )
     }
 
-    // --- CHECKOUT & TRANSACTIONS ---
-    suspend fun generateNextInvoiceNumber(): String {
-        val settingsSnap = dao.getStoreSettingsSnapshot() ?: StoreSettingsEntity()
-        val prefix = settingsSnap.invoicePrefix.trim().ifEmpty { "INV" }
-        val now = System.currentTimeMillis()
-        val dateStr = SecurityAndFormatUtils.formatInvoiceDate(now)
-        val countToday = dao.getTransactionCountBetween(
-            SecurityAndFormatUtils.getStartOfDay(now),
-            SecurityAndFormatUtils.getEndOfDay(now)
-        ) + 1
-        val seq = countToday.toString().padStart(4, '0')
-        val randomSuffix = (10..99).random()
-        return "$prefix-$dateStr-$seq$randomSuffix"
+    // --- BILLING NUMBER & ORDERING ("PROSES PESAN") ---
+    suspend fun getNextBillingNumber(): Int {
+        return dao.getMaxBillingNumber() + 1
     }
 
-    suspend fun processCheckout(
+    suspend fun sendOrderToKitchen(
+        existingTransactionId: Long?,
+        billingNumber: Int?,
         cartItems: List<CartItem>,
         cashier: CashierUserEntity,
         customer: CustomerEntity?,
-        discountAmount: Double,
-        taxPercentage: Double,
-        serviceFee: Double,
-        paymentMethod: String,
-        amountPaid: Double,
-        notes: String,
-        customInvoiceNumber: String? = null
+        notes: String
     ): Result<TransactionWithItems> = runCatching {
         if (cartItems.isEmpty()) {
-            throw IllegalArgumentException("Keranjang belanja masih kosong.")
+            throw IllegalArgumentException("Pilih menu terlebih dahulu sebelum mengirim pesanan.")
+        }
+        val effectiveBillingNumber = if (billingNumber != null && billingNumber > 0) {
+            billingNumber
+        } else {
+            getNextBillingNumber()
+        }
+
+        val savedTxId = dao.saveOrderToKitchenAtomic(
+            existingTransactionId = existingTransactionId,
+            billingNumber = effectiveBillingNumber,
+            cashier = cashier,
+            customer = customer,
+            cartItems = cartItems,
+            notes = notes
+        )
+
+        dao.getTransactionWithItemsById(savedTxId)
+            ?: throw IllegalStateException("Gagal memuat data pesanan setelah disimpan.")
+    }
+
+    // --- PAYMENT ("PROSES BAYAR") ---
+    suspend fun processBillingPayment(
+        transactionId: Long,
+        cashier: CashierUserEntity,
+        discountAmount: Double,
+        serviceFee: Double,
+        paymentMethod: String,
+        amountPaid: Double
+    ): Result<TransactionWithItems> = runCatching {
+        val existingTxWithItems = dao.getTransactionWithItemsById(transactionId)
+            ?: throw IllegalStateException("Billing tidak ditemukan.")
+        if (existingTxWithItems.items.isEmpty()) {
+            throw IllegalStateException("Billing ini tidak memiliki item pesanan.")
         }
         if (discountAmount < 0.0) {
             throw IllegalArgumentException("Diskon tidak boleh bernilai negatif.")
@@ -260,15 +259,13 @@ class KasirRepository(private val dao: KasirDao) {
         }
 
         val settingsSnap = dao.getStoreSettingsSnapshot() ?: StoreSettingsEntity()
-        val subtotal = cartItems.sumOf { it.subtotal }
-        val totalCost = cartItems.sumOf { it.totalCost }
-        val safeDiscount = discountAmount.coerceAtMost(subtotal)
+        val subtotal = existingTxWithItems.items.sumOf { it.subtotal }
+        val safeDiscount = if (settingsSnap.enableDiscount) discountAmount.coerceIn(0.0, subtotal) else 0.0
         val afterDiscount = (subtotal - safeDiscount).coerceAtLeast(0.0)
-        val effectiveTaxPercent = if (settingsSnap.enableTax) taxPercentage.coerceAtLeast(0.0) else 0.0
+        val effectiveTaxPercent = if (settingsSnap.enableTax) settingsSnap.defaultTaxPercent.coerceAtLeast(0.0) else 0.0
         val taxAmount = afterDiscount * (effectiveTaxPercent / 100.0)
         val rawTotal = afterDiscount + taxAmount + serviceFee
 
-        // Optional price rounding to nearest 100 Rupiah if enabled in settings
         val roundingAmount = if (settingsSnap.enableRounding) {
             val remainder = rawTotal % 100.0
             if (remainder == 0.0) 0.0
@@ -281,66 +278,43 @@ class KasirRepository(private val dao: KasirDao) {
         val finalTotal = (rawTotal + roundingAmount).coerceAtLeast(0.0)
 
         if (paymentMethod.equals("Tunai", ignoreCase = true) && amountPaid < finalTotal) {
+            val shortage = finalTotal - amountPaid
             throw IllegalArgumentException(
-                "Uang diterima (${SecurityAndFormatUtils.formatRupiah(amountPaid)}) kurang dari total tagihan (${SecurityAndFormatUtils.formatRupiah(finalTotal)})."
+                "Uang tunai kurang ${SecurityAndFormatUtils.formatRupiah(shortage)} (Total: ${SecurityAndFormatUtils.formatRupiah(finalTotal)}, Tunai: ${SecurityAndFormatUtils.formatRupiah(amountPaid)})."
             )
         }
 
         val effectivePaid = if (paymentMethod.equals("Tunai", ignoreCase = true)) amountPaid else finalTotal
         val changeAmount = (effectivePaid - finalTotal).coerceAtLeast(0.0)
-        val invoiceNo = if (!customInvoiceNumber.isNullOrBlank()) {
-            customInvoiceNumber.trim()
-        } else {
-            generateNextInvoiceNumber()
-        }
 
-        val txEntity = TransactionEntity(
-            invoiceNumber = invoiceNo,
-            timestamp = System.currentTimeMillis(),
-            cashierId = cashier.id,
-            cashierName = cashier.name,
-            customerId = customer?.id,
-            customerName = customer?.name ?: "Pelanggan Umum",
-            subtotal = subtotal,
+        dao.completeBillingPaymentAtomic(
+            transactionId = transactionId,
+            cashier = cashier,
             discountAmount = safeDiscount,
             taxPercentage = effectiveTaxPercent,
             taxAmount = taxAmount,
             serviceFee = serviceFee,
             roundingAmount = roundingAmount,
             totalAmount = finalTotal,
-            totalCost = totalCost,
             paymentMethod = paymentMethod,
             amountPaid = effectivePaid,
-            changeAmount = changeAmount,
-            notes = notes.trim(),
-            status = "COMPLETED"
+            changeAmount = changeAmount
         )
 
-        val insertedId = dao.executeCheckoutAtomic(
-            transaction = txEntity,
-            cartItems = cartItems,
-            autoReduceStock = settingsSnap.autoReduceStock,
-            allowNegativeStock = settingsSnap.allowNegativeStock
-        )
-
-        dao.getTransactionWithItemsById(insertedId)
-            ?: throw IllegalStateException("Gagal memuat kembali transaksi setelah disimpan.")
+        dao.getTransactionWithItemsById(transactionId)
+            ?: throw IllegalStateException("Gagal memuat kembali transaksi setelah pembayaran.")
     }
 
     suspend fun cancelTransaction(
         transactionId: Long,
-        cancelReason: String,
-        cancelledBy: String
+        cancelReason: String
     ): Result<Unit> = runCatching {
         if (cancelReason.trim().isEmpty()) {
-            throw IllegalArgumentException("Harap isi alasan pembatalan transaksi.")
+            throw IllegalArgumentException("Harap isi alasan pembatalan billing/transaksi.")
         }
-        val settingsSnap = dao.getStoreSettingsSnapshot() ?: StoreSettingsEntity()
         dao.cancelTransactionAtomic(
             transactionId = transactionId,
-            cancelReason = cancelReason.trim(),
-            cancelledBy = cancelledBy,
-            restoreStock = settingsSnap.autoReduceStock
+            cancelReason = cancelReason.trim()
         )
     }
 

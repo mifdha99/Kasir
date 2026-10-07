@@ -84,6 +84,51 @@ object BluetoothPrinterService {
         }.sortedBy { it.name }
     }
 
+    // --- FORMAT TIKET PESANAN DAPUR (TANPA INFO PEMBAYARAN) ---
+    fun formatKitchenTicketText(
+        txWithItems: TransactionWithItems,
+        paperSizeMm: Int = 58
+    ): String {
+        val lineWidth = if (paperSizeMm >= 80) 48 else 32
+        val doubleDivider = "=".repeat(lineWidth)
+        val tx = txWithItems.transaction
+        val billingUpper = tx.billingDisplay.uppercase()
+
+        val sb = StringBuilder()
+        sb.appendLine(doubleDivider)
+        sb.appendLine("DAPUR")
+        sb.appendLine(billingUpper)
+        sb.appendLine(SecurityAndFormatUtils.formatReceiptDateTime(tx.timestamp))
+        if (tx.customerName.isNotBlank() && tx.customerName != "Pelanggan Umum") {
+            sb.appendLine("Pelanggan: ${tx.customerName}")
+        }
+        sb.appendLine()
+
+        for (item in txWithItems.items) {
+            sb.appendLine("${item.productName} x${item.quantity}")
+            val portionNotes = item.portionNotes
+            val hasAnyPortionNote = portionNotes.any { it.isNotBlank() }
+            if (hasAnyPortionNote) {
+                portionNotes.forEachIndexed { idx, note ->
+                    if (note.isNotBlank()) {
+                        sb.appendLine("- Porsi ${idx + 1}: $note")
+                    }
+                }
+            } else if (item.itemNote.isNotBlank()) {
+                sb.appendLine("- Catatan: ${item.itemNote}")
+            }
+            sb.appendLine()
+        }
+
+        if (tx.notes.isNotBlank()) {
+            sb.appendLine("Catatan Pesanan: ${tx.notes}")
+            sb.appendLine()
+        }
+        sb.appendLine(doubleDivider)
+        return sb.toString()
+    }
+
+    // --- FORMAT STRUK PEMBAYARAN SEDERHANA ---
     fun formatReceiptText(
         txWithItems: TransactionWithItems,
         settings: StoreSettingsEntity,
@@ -117,6 +162,7 @@ object BluetoothPrinterService {
         val divider = "-".repeat(lineWidth)
         val doubleDivider = "=".repeat(lineWidth)
 
+        sb.appendLine(doubleDivider)
         sb.appendLine(center(settings.storeName.uppercase()))
         if (settings.storeAddress.isNotBlank()) {
             sb.appendLine(center(settings.storeAddress))
@@ -124,76 +170,83 @@ object BluetoothPrinterService {
         if (settings.storePhone.isNotBlank()) {
             sb.appendLine(center("Telp: ${settings.storePhone}"))
         }
-        if (settings.storeNpwp.isNotBlank()) {
-            sb.appendLine(center("NPWP: ${settings.storeNpwp}"))
-        }
-        sb.appendLine(doubleDivider)
+        sb.appendLine()
         if (tx.status == "CANCELLED") {
-            sb.appendLine(center("*** TRANSAKSI DIBATALKAN ***"))
-            sb.appendLine(divider)
+            sb.appendLine(center("*** DIBATALKAN ***"))
+        } else if (tx.status == "UNPAID") {
+            sb.appendLine(center("*** BELUM LUNAS ***"))
         }
-        sb.appendLine(leftRight("No. Struk", tx.invoiceNumber))
-        sb.appendLine(leftRight("Tanggal", SecurityAndFormatUtils.formatDate(tx.timestamp)))
-        sb.appendLine(leftRight("Jam", SecurityAndFormatUtils.formatTime(tx.timestamp)))
-        sb.appendLine(leftRight("Kasir", tx.cashierName))
-        sb.appendLine(leftRight("Pelanggan", tx.customerName))
-        sb.appendLine(divider)
+        sb.appendLine(tx.billingDisplay.uppercase())
+        sb.appendLine(SecurityAndFormatUtils.formatReceiptDateTime(tx.timestamp))
+        if (tx.customerName.isNotBlank() && tx.customerName != "Pelanggan Umum") {
+            sb.appendLine("Pelanggan: ${tx.customerName}")
+        }
+        sb.appendLine()
 
         for (item in txWithItems.items) {
             sb.appendLine(item.productName)
-            val qtyPrice = "${item.quantity} ${item.unit} x ${SecurityAndFormatUtils.formatNumber(item.sellPrice)}"
+            val qtyPrice = "${item.quantity} x ${SecurityAndFormatUtils.formatRupiah(item.sellPrice)}"
             val itemSub = SecurityAndFormatUtils.formatRupiah(item.subtotal)
-            sb.appendLine(leftRight("  $qtyPrice", itemSub))
-            if (item.itemNote.isNotBlank()) {
-                sb.appendLine("  *Catatan: ${item.itemNote}")
+            sb.appendLine(leftRight(qtyPrice, itemSub))
+            val portionNotes = item.portionNotes
+            portionNotes.forEachIndexed { idx, note ->
+                if (note.isNotBlank()) {
+                    if (portionNotes.size == 1) {
+                        sb.appendLine("  Catatan: $note")
+                    } else {
+                        sb.appendLine("  - Porsi ${idx + 1}: $note")
+                    }
+                }
             }
+            sb.appendLine()
         }
 
         sb.appendLine(divider)
-        sb.appendLine(leftRight("Subtotal", SecurityAndFormatUtils.formatRupiah(tx.subtotal)))
-        if (tx.discountAmount > 0) {
-            sb.appendLine(leftRight("Diskon", "-${SecurityAndFormatUtils.formatRupiah(tx.discountAmount)}"))
-        }
-        if (tx.taxAmount > 0) {
-            sb.appendLine(
-                leftRight(
-                    "Pajak (${SecurityAndFormatUtils.formatNumber(tx.taxPercentage)}%)",
-                    SecurityAndFormatUtils.formatRupiah(tx.taxAmount)
+        if (tx.discountAmount > 0 || tx.taxAmount > 0 || tx.serviceFee > 0 || tx.roundingAmount != 0.0) {
+            sb.appendLine(leftRight("SUBTOTAL", SecurityAndFormatUtils.formatRupiah(tx.subtotal)))
+            if (tx.discountAmount > 0) {
+                sb.appendLine(leftRight("DISKON", "-${SecurityAndFormatUtils.formatRupiah(tx.discountAmount)}"))
+            }
+            if (tx.taxAmount > 0) {
+                sb.appendLine(
+                    leftRight(
+                        "PAJAK (${SecurityAndFormatUtils.formatNumber(tx.taxPercentage)}%)",
+                        SecurityAndFormatUtils.formatRupiah(tx.taxAmount)
+                    )
                 )
-            )
+            }
+            if (tx.serviceFee > 0) {
+                sb.appendLine(leftRight("BIAYA TAMBAHAN", SecurityAndFormatUtils.formatRupiah(tx.serviceFee)))
+            }
+            if (tx.roundingAmount != 0.0) {
+                sb.appendLine(leftRight("PEMBULATAN", SecurityAndFormatUtils.formatRupiah(tx.roundingAmount)))
+            }
         }
-        if (tx.serviceFee > 0) {
-            sb.appendLine(leftRight("Biaya Tambahan", SecurityAndFormatUtils.formatRupiah(tx.serviceFee)))
+        sb.appendLine(leftRight("TOTAL", SecurityAndFormatUtils.formatRupiah(tx.totalAmount)))
+        if (tx.status == "PAID" || tx.status == "COMPLETED") {
+            sb.appendLine(leftRight(tx.paymentMethod.uppercase(), SecurityAndFormatUtils.formatRupiah(tx.amountPaid)))
+            sb.appendLine(leftRight("KEMBALI", SecurityAndFormatUtils.formatRupiah(tx.changeAmount)))
+        } else {
+            sb.appendLine(leftRight("STATUS", if (tx.status == "UNPAID") "BELUM BAYAR" else "DIBATALKAN"))
         }
-        if (tx.roundingAmount != 0.0) {
-            sb.appendLine(leftRight("Pembulatan", SecurityAndFormatUtils.formatRupiah(tx.roundingAmount)))
-        }
-        sb.appendLine(doubleDivider)
-        sb.appendLine(leftRight("TOTAL AKHIR", SecurityAndFormatUtils.formatRupiah(tx.totalAmount)))
-        sb.appendLine(leftRight("Metode Bayar", tx.paymentMethod))
-        sb.appendLine(leftRight("Uang Diterima", SecurityAndFormatUtils.formatRupiah(tx.amountPaid)))
-        sb.appendLine(leftRight("Kembalian", SecurityAndFormatUtils.formatRupiah(tx.changeAmount)))
-        if (tx.notes.isNotBlank()) {
-            sb.appendLine(divider)
-            sb.appendLine("Catatan: ${tx.notes}")
-        }
-        if (tx.status == "CANCELLED" && tx.cancelReason.isNotBlank()) {
-            sb.appendLine(divider)
-            sb.appendLine("Alasan Batal: ${tx.cancelReason}")
-        }
-        sb.appendLine(divider)
+        sb.appendLine()
         if (settings.receiptFooter.isNotBlank()) {
             sb.appendLine(center(settings.receiptFooter))
+        } else {
+            sb.appendLine(center("TERIMA KASIH"))
         }
+        sb.appendLine(doubleDivider)
         return sb.toString()
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun printReceiptToBluetooth(
+    suspend fun printTextToBluetooth(
         context: Context,
-        txWithItems: TransactionWithItems,
+        rawText: String,
         settings: StoreSettingsEntity,
-        printerAddressOverride: String? = null
+        printerAddressOverride: String? = null,
+        copies: Int = 1,
+        successLabel: String = "Berhasil dicetak"
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             if (!hasBluetoothPermissions(context)) {
@@ -220,33 +273,26 @@ object BluetoothPrinterService {
                 adapter.cancelDiscovery()
             }
 
-            val formattedText = formatReceiptText(
-                txWithItems = txWithItems,
-                settings = settings,
-                paperSizeMm = settings.paperSizeMm
-            )
-            val copies = settings.printCopies.coerceIn(1, 5)
-
+            val safeCopies = copies.coerceIn(1, 5)
             var socket: BluetoothSocket? = null
             try {
                 socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
                 socket.connect()
                 val out: OutputStream = socket.outputStream
 
-                // ESC/POS Initialize printer
                 val escInit = byteArrayOf(0x1B, 0x40)
                 val escAlignLeft = byteArrayOf(0x1B, 0x61, 0x00)
                 val escFeedAndCut = byteArrayOf(0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00)
 
-                for (copy in 1..copies) {
+                for (copy in 1..safeCopies) {
                     out.write(escInit)
                     out.write(escAlignLeft)
-                    out.write(formattedText.toByteArray(Charset.forName("GBK")))
+                    out.write(rawText.toByteArray(Charset.forName("GBK")))
                     out.write(escFeedAndCut)
                     out.flush()
                 }
                 Thread.sleep(350)
-                "Struk berhasil dicetak ke ${device.name ?: address} ($copies salinan)."
+                "$successLabel ke ${device.name ?: address}."
             } catch (e: Exception) {
                 throw IllegalStateException(
                     "Gagal terhubung ke printer '${device.name ?: address}'. Pastikan printer thermal menyala, kertas tersedia, dan berada dalam jangkauan Bluetooth."
@@ -260,67 +306,72 @@ object BluetoothPrinterService {
         }
     }
 
+    suspend fun printKitchenTicketToBluetooth(
+        context: Context,
+        txWithItems: TransactionWithItems,
+        settings: StoreSettingsEntity,
+        printerAddressOverride: String? = null
+    ): Result<String> {
+        val kitchenText = formatKitchenTicketText(txWithItems, settings.paperSizeMm)
+        return printTextToBluetooth(
+            context = context,
+            rawText = kitchenText,
+            settings = settings,
+            printerAddressOverride = printerAddressOverride,
+            copies = 1,
+            successLabel = "Tiket dapur ${txWithItems.transaction.billingDisplay} berhasil dicetak"
+        )
+    }
+
+    suspend fun printReceiptToBluetooth(
+        context: Context,
+        txWithItems: TransactionWithItems,
+        settings: StoreSettingsEntity,
+        printerAddressOverride: String? = null
+    ): Result<String> {
+        val formattedText = formatReceiptText(
+            txWithItems = txWithItems,
+            settings = settings,
+            paperSizeMm = settings.paperSizeMm
+        )
+        return printTextToBluetooth(
+            context = context,
+            rawText = formattedText,
+            settings = settings,
+            printerAddressOverride = printerAddressOverride,
+            copies = settings.printCopies,
+            successLabel = "Struk ${txWithItems.transaction.billingDisplay} berhasil dicetak"
+        )
+    }
+
     @SuppressLint("MissingPermission")
     suspend fun testPrintBluetooth(
         context: Context,
         settings: StoreSettingsEntity,
         printerAddress: String,
         printerName: String
-    ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            if (!hasBluetoothPermissions(context)) {
-                throw SecurityException("Izin Bluetooth belum diberikan.")
-            }
-            val adapter = getBluetoothAdapter(context)
-                ?: throw IllegalStateException("Bluetooth tidak tersedia di perangkat ini.")
-            if (!adapter.isEnabled) {
-                throw IllegalStateException("Bluetooth masih mati. Aktifkan Bluetooth terlebih dahulu.")
-            }
-            if (printerAddress.isBlank()) {
-                throw IllegalStateException("Pilih perangkat printer terlebih dahulu.")
-            }
-
-            val device = adapter.getRemoteDevice(printerAddress)
-            if (adapter.isDiscovering) {
-                adapter.cancelDiscovery()
-            }
-
-            val lineWidth = if (settings.paperSizeMm >= 80) 48 else 32
-            val divider = "=".repeat(lineWidth)
-            val testReceipt = buildString {
-                appendLine(divider)
-                appendLine("TES CETAK PRINTER KASIRKU")
-                appendLine(settings.storeName)
-                appendLine("Printer : $printerName")
-                appendLine("MAC     : $printerAddress")
-                appendLine("Kertas  : ${settings.paperSizeMm}mm ($lineWidth karakter)")
-                appendLine("Waktu   : ${SecurityAndFormatUtils.formatDateTime(System.currentTimeMillis())}")
-                appendLine(divider)
-                appendLine("Printer siap digunakan!")
-                appendLine()
-            }
-
-            var socket: BluetoothSocket? = null
-            try {
-                socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                socket.connect()
-                val out = socket.outputStream
-                out.write(byteArrayOf(0x1B, 0x40))
-                out.write(testReceipt.toByteArray(Charset.forName("GBK")))
-                out.write(byteArrayOf(0x0A, 0x0A, 0x0A))
-                out.flush()
-                Thread.sleep(300)
-                "Tes cetak ke $printerName berhasil!"
-            } catch (e: Exception) {
-                throw IllegalStateException(
-                    "Koneksi tes cetak ke $printerName gagal. Pastikan printer menyala dan sudah dipasangkan (paired)."
-                )
-            } finally {
-                try {
-                    socket?.close()
-                } catch (_: Exception) {
-                }
-            }
+    ): Result<String> {
+        val lineWidth = if (settings.paperSizeMm >= 80) 48 else 32
+        val divider = "=".repeat(lineWidth)
+        val testReceipt = buildString {
+            appendLine(divider)
+            appendLine("TES CETAK PRINTER KASIRKU")
+            appendLine(settings.storeName)
+            appendLine("Printer : $printerName")
+            appendLine("MAC     : $printerAddress")
+            appendLine("Kertas  : ${settings.paperSizeMm}mm ($lineWidth karakter)")
+            appendLine("Waktu   : ${SecurityAndFormatUtils.formatReceiptDateTime(System.currentTimeMillis())}")
+            appendLine(divider)
+            appendLine("Printer siap digunakan!")
+            appendLine()
         }
+        return printTextToBluetooth(
+            context = context,
+            rawText = testReceipt,
+            settings = settings,
+            printerAddressOverride = printerAddress,
+            copies = 1,
+            successLabel = "Tes cetak berhasil"
+        )
     }
 }

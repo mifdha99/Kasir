@@ -7,16 +7,17 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import com.example.util.SecurityAndFormatUtils
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface KasirDao {
 
     // --- CATEGORIES ---
-    @Query("SELECT * FROM categories ORDER BY name ASC")
+    @Query("SELECT * FROM categories ORDER BY id ASC")
     fun getAllCategories(): Flow<List<CategoryEntity>>
 
-    @Query("SELECT * FROM categories ORDER BY name ASC")
+    @Query("SELECT * FROM categories ORDER BY id ASC")
     suspend fun getAllCategoriesSnapshot(): List<CategoryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -31,6 +32,12 @@ interface KasirDao {
     @Query("UPDATE products SET categoryName = :newName WHERE categoryId = :categoryId")
     suspend fun updateProductsCategoryName(categoryId: Long, newName: String)
 
+    @Query("UPDATE products SET categoryId = :toCategoryId, categoryName = :toCategoryName WHERE categoryId = :fromCategoryId")
+    suspend fun moveProductsToCategory(fromCategoryId: Long, toCategoryId: Long, toCategoryName: String)
+
+    @Query("SELECT COUNT(*) FROM products WHERE categoryId = :categoryId")
+    suspend fun countProductsInCategory(categoryId: Long): Int
+
     // --- PRODUCTS ---
     @Query("SELECT * FROM products ORDER BY name ASC")
     fun getAllProducts(): Flow<List<ProductEntity>>
@@ -40,12 +47,6 @@ interface KasirDao {
 
     @Query("SELECT * FROM products WHERE id = :id LIMIT 1")
     suspend fun getProductById(id: Long): ProductEntity?
-
-    @Query("SELECT * FROM products WHERE barcode = :barcode AND barcode != '' LIMIT 1")
-    suspend fun getProductByBarcode(barcode: String): ProductEntity?
-
-    @Query("SELECT * FROM products WHERE sku = :sku AND sku != '' LIMIT 1")
-    suspend fun getProductBySku(sku: String): ProductEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertProduct(product: ProductEntity): Long
@@ -117,153 +118,210 @@ interface KasirDao {
     @Delete
     suspend fun deletePrinter(printer: PrinterDeviceEntity)
 
-    // --- STOCK MOVEMENTS ---
-    @Query("SELECT * FROM stock_movements ORDER BY timestamp DESC")
-    fun getAllStockMovements(): Flow<List<StockMovementEntity>>
-
-    @Query("SELECT * FROM stock_movements ORDER BY timestamp DESC")
-    suspend fun getAllStockMovementsSnapshot(): List<StockMovementEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertStockMovement(movement: StockMovementEntity): Long
-
-    // --- TRANSACTIONS ---
+    // --- TRANSACTIONS / BILLINGS ---
     @Transaction
-    @Query("SELECT * FROM transactions ORDER BY timestamp DESC")
+    @Query("SELECT * FROM transactions ORDER BY billingNumber DESC, timestamp DESC")
     fun getAllTransactionsWithItems(): Flow<List<TransactionWithItems>>
+
+    @Transaction
+    @Query("SELECT * FROM transactions WHERE status = 'UNPAID' ORDER BY billingNumber ASC")
+    fun getUnpaidBillingsWithItems(): Flow<List<TransactionWithItems>>
 
     @Transaction
     @Query("SELECT * FROM transactions WHERE id = :transactionId LIMIT 1")
     suspend fun getTransactionWithItemsById(transactionId: Long): TransactionWithItems?
 
-    @Query("SELECT * FROM transactions ORDER BY timestamp DESC")
+    @Query("SELECT * FROM transactions ORDER BY billingNumber DESC, timestamp DESC")
     suspend fun getAllTransactionsSnapshot(): List<TransactionEntity>
 
     @Query("SELECT * FROM transaction_items ORDER BY id ASC")
     suspend fun getAllTransactionItemsSnapshot(): List<TransactionItemEntity>
 
-    @Query("SELECT COUNT(*) FROM transactions WHERE timestamp >= :startOfDay AND timestamp <= :endOfDay")
-    suspend fun getTransactionCountBetween(startOfDay: Long, endOfDay: Long): Int
+    @Query("SELECT COALESCE(MAX(billingNumber), 0) FROM transactions")
+    suspend fun getMaxBillingNumber(): Int
 
-    @Insert(onConflict = OnConflictStrategy.ABORT)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTransaction(transaction: TransactionEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTransactionItems(items: List<TransactionItemEntity>)
 
+    @Query("DELETE FROM transaction_items WHERE transactionId = :transactionId")
+    suspend fun deleteItemsForTransaction(transactionId: Long)
+
     @Update
     suspend fun updateTransaction(transaction: TransactionEntity)
 
-    // --- ATOMIC CHECKOUT TRANSACTION ---
+    // --- ATOMIC: KIRIM PESANAN KE DAPUR (SAVE / UPDATE UNPAID BILLING) ---
     @Transaction
-    suspend fun executeCheckoutAtomic(
-        transaction: TransactionEntity,
+    suspend fun saveOrderToKitchenAtomic(
+        existingTransactionId: Long?,
+        billingNumber: Int,
+        cashier: CashierUserEntity,
+        customer: CustomerEntity?,
         cartItems: List<CartItem>,
-        autoReduceStock: Boolean,
-        allowNegativeStock: Boolean
+        notes: String
     ): Long {
         if (cartItems.isEmpty()) {
-            throw IllegalArgumentException("Keranjang belanja masih kosong.")
+            throw IllegalArgumentException("Pilih minimal 1 menu makanan/minuman terlebih dahulu.")
         }
 
-        // Validate stock first before writing anything
-        val productSnapshots = mutableMapOf<Long, ProductEntity>()
-        for (cartItem in cartItems) {
-            if (cartItem.quantity <= 0) {
-                throw IllegalArgumentException("Jumlah produk ${cartItem.product.name} tidak valid.")
-            }
-            val currentProduct = getProductById(cartItem.product.id)
-                ?: throw IllegalStateException("Produk '${cartItem.product.name}' tidak ditemukan di database.")
-            if (autoReduceStock && !allowNegativeStock && currentProduct.stock < cartItem.quantity) {
-                throw IllegalStateException(
-                    "Stok '${currentProduct.name}' tidak mencukupi (Tersedia: ${currentProduct.stock} ${currentProduct.unit}, Diminta: ${cartItem.quantity} ${currentProduct.unit})."
+        val subtotal = cartItems.sumOf { it.subtotal }
+        val totalCost = cartItems.sumOf { it.totalCost }
+        val billingLabel = SecurityAndFormatUtils.formatBillingLabel(billingNumber)
+        val now = System.currentTimeMillis()
+
+        val txId = if (existingTransactionId != null && existingTransactionId > 0L) {
+            val existing = getTransactionWithItemsById(existingTransactionId)?.transaction
+            if (existing != null) {
+                updateTransaction(
+                    existing.copy(
+                        billingNumber = billingNumber,
+                        invoiceNumber = billingLabel,
+                        cashierId = cashier.id,
+                        cashierName = cashier.name,
+                        customerId = customer?.id ?: existing.customerId,
+                        customerName = customer?.name ?: existing.customerName,
+                        subtotal = subtotal,
+                        totalAmount = (subtotal - existing.discountAmount + existing.taxAmount + existing.serviceFee + existing.roundingAmount).coerceAtLeast(0.0),
+                        totalCost = totalCost,
+                        notes = notes.trim(),
+                        isSentToKitchen = true,
+                        status = "UNPAID"
+                    )
+                )
+                deleteItemsForTransaction(existing.id)
+                existing.id
+            } else {
+                insertTransaction(
+                    TransactionEntity(
+                        billingNumber = billingNumber,
+                        invoiceNumber = billingLabel,
+                        timestamp = now,
+                        cashierId = cashier.id,
+                        cashierName = cashier.name,
+                        customerId = customer?.id,
+                        customerName = customer?.name ?: "Pelanggan Umum",
+                        subtotal = subtotal,
+                        totalAmount = subtotal,
+                        totalCost = totalCost,
+                        notes = notes.trim(),
+                        isSentToKitchen = true,
+                        status = "UNPAID"
+                    )
                 )
             }
-            productSnapshots[currentProduct.id] = currentProduct
+        } else {
+            insertTransaction(
+                TransactionEntity(
+                    billingNumber = billingNumber,
+                    invoiceNumber = billingLabel,
+                    timestamp = now,
+                    cashierId = cashier.id,
+                    cashierName = cashier.name,
+                    customerId = customer?.id,
+                    customerName = customer?.name ?: "Pelanggan Umum",
+                    subtotal = subtotal,
+                    totalAmount = subtotal,
+                    totalCost = totalCost,
+                    notes = notes.trim(),
+                    isSentToKitchen = true,
+                    status = "UNPAID"
+                )
+            )
         }
 
-        // Insert transaction header
-        val txId = insertTransaction(transaction)
-
-        // Build and insert transaction items
         val txItems = cartItems.map { cartItem ->
+            val normalizedNotes = cartItem.normalizedPortionNotes
             TransactionItemEntity(
                 transactionId = txId,
                 productId = cartItem.product.id,
                 productName = cartItem.product.name,
-                sku = cartItem.product.sku,
                 categoryName = cartItem.product.categoryName,
                 buyPrice = cartItem.product.buyPrice,
                 sellPrice = cartItem.product.sellPrice,
                 quantity = cartItem.quantity,
                 unit = cartItem.product.unit,
-                itemNote = cartItem.note.trim(),
+                itemNote = SecurityAndFormatUtils.summarizePortionNotes(normalizedNotes),
+                portionNotesJson = SecurityAndFormatUtils.encodePortionNotes(normalizedNotes),
                 subtotal = cartItem.subtotal
             )
         }
         insertTransactionItems(txItems)
+        return txId
+    }
 
-        // Deduct stock and record stock movement if autoReduceStock is enabled
-        if (autoReduceStock) {
-            for (cartItem in cartItems) {
-                val currentProduct = productSnapshots[cartItem.product.id]!!
-                val previousStock = currentProduct.stock
-                val newStock = previousStock - cartItem.quantity
-                updateProduct(
-                    currentProduct.copy(
-                        stock = newStock,
-                        updatedAt = transaction.timestamp
-                    )
-                )
-                insertStockMovement(
-                    StockMovementEntity(
-                        productId = currentProduct.id,
-                        productName = currentProduct.name,
-                        type = "SALE",
-                        quantityChange = -cartItem.quantity,
-                        previousStock = previousStock,
-                        newStock = newStock,
-                        note = "Penjualan ${transaction.invoiceNumber}",
-                        referenceInvoice = transaction.invoiceNumber,
-                        timestamp = transaction.timestamp,
-                        userName = transaction.cashierName
-                    )
-                )
-            }
+    // --- ATOMIC: BAYAR & SELESAIKAN BILLING ---
+    @Transaction
+    suspend fun completeBillingPaymentAtomic(
+        transactionId: Long,
+        cashier: CashierUserEntity,
+        discountAmount: Double,
+        taxPercentage: Double,
+        taxAmount: Double,
+        serviceFee: Double,
+        roundingAmount: Double,
+        totalAmount: Double,
+        paymentMethod: String,
+        amountPaid: Double,
+        changeAmount: Double
+    ): Long {
+        val txWithItems = getTransactionWithItemsById(transactionId)
+            ?: throw IllegalStateException("Data Billing tidak ditemukan.")
+        val existing = txWithItems.transaction
+        if (existing.status == "PAID" || existing.status == "COMPLETED") {
+            throw IllegalStateException("${existing.billingDisplay} sudah dibayar sebelumnya.")
         }
 
-        // Update customer stats if a registered customer is attached
-        val custId = transaction.customerId
+        val now = System.currentTimeMillis()
+        updateTransaction(
+            existing.copy(
+                timestamp = now,
+                cashierId = cashier.id,
+                cashierName = cashier.name,
+                discountAmount = discountAmount,
+                taxPercentage = taxPercentage,
+                taxAmount = taxAmount,
+                serviceFee = serviceFee,
+                roundingAmount = roundingAmount,
+                totalAmount = totalAmount,
+                paymentMethod = paymentMethod,
+                amountPaid = amountPaid,
+                changeAmount = changeAmount,
+                status = "PAID"
+            )
+        )
+
+        val custId = existing.customerId
         if (custId != null && custId > 0L) {
             val customer = getCustomerById(custId)
             if (customer != null) {
                 updateCustomer(
                     customer.copy(
                         totalTransactions = customer.totalTransactions + 1,
-                        totalPurchase = customer.totalPurchase + transaction.totalAmount
+                        totalPurchase = customer.totalPurchase + totalAmount
                     )
                 )
             }
         }
 
-        return txId
+        return existing.id
     }
 
-    // --- ATOMIC CANCEL / REFUND TRANSACTION ---
+    // --- ATOMIC: CANCEL / REFUND TRANSACTION ---
     @Transaction
     suspend fun cancelTransactionAtomic(
         transactionId: Long,
-        cancelReason: String,
-        cancelledBy: String,
-        restoreStock: Boolean
+        cancelReason: String
     ) {
         val txWithItems = getTransactionWithItemsById(transactionId)
             ?: throw IllegalStateException("Transaksi tidak ditemukan.")
         val tx = txWithItems.transaction
         if (tx.status == "CANCELLED") {
-            throw IllegalStateException("Transaksi ${tx.invoiceNumber} sudah dibatalkan sebelumnya.")
+            throw IllegalStateException("${tx.billingDisplay} sudah dibatalkan sebelumnya.")
         }
 
+        val wasPaid = (tx.status == "PAID" || tx.status == "COMPLETED")
         val now = System.currentTimeMillis()
         updateTransaction(
             tx.copy(
@@ -273,114 +331,20 @@ interface KasirDao {
             )
         )
 
-        if (restoreStock) {
-            for (item in txWithItems.items) {
-                val product = getProductById(item.productId)
-                if (product != null) {
-                    val prevStock = product.stock
-                    val updatedStock = prevStock + item.quantity
-                    updateProduct(
-                        product.copy(
-                            stock = updatedStock,
-                            updatedAt = now
-                        )
-                    )
-                    insertStockMovement(
-                        StockMovementEntity(
-                            productId = product.id,
-                            productName = product.name,
-                            type = "REFUND",
-                            quantityChange = item.quantity,
-                            previousStock = prevStock,
-                            newStock = updatedStock,
-                            note = "Pembatalan ${tx.invoiceNumber}: $cancelReason",
-                            referenceInvoice = tx.invoiceNumber,
-                            timestamp = now,
-                            userName = cancelledBy
+        if (wasPaid) {
+            val custId = tx.customerId
+            if (custId != null && custId > 0L) {
+                val customer = getCustomerById(custId)
+                if (customer != null) {
+                    updateCustomer(
+                        customer.copy(
+                            totalTransactions = (customer.totalTransactions - 1).coerceAtLeast(0),
+                            totalPurchase = (customer.totalPurchase - tx.totalAmount).coerceAtLeast(0.0)
                         )
                     )
                 }
             }
         }
-
-        // Revert customer stats if applicable
-        val custId = tx.customerId
-        if (custId != null && custId > 0L) {
-            val customer = getCustomerById(custId)
-            if (customer != null) {
-                updateCustomer(
-                    customer.copy(
-                        totalTransactions = (customer.totalTransactions - 1).coerceAtLeast(0),
-                        totalPurchase = (customer.totalPurchase - tx.totalAmount).coerceAtLeast(0.0)
-                    )
-                )
-            }
-        }
-    }
-
-    // --- ATOMIC STOCK ADJUSTMENT ---
-    @Transaction
-    suspend fun adjustStockAtomic(
-        productId: Long,
-        type: String, // "IN", "OUT", "ADJUSTMENT"
-        quantityInput: Int,
-        note: String,
-        userName: String,
-        allowNegativeStock: Boolean
-    ) {
-        if (quantityInput < 0) {
-            throw IllegalArgumentException("Jumlah stok tidak boleh bernilai negatif.")
-        }
-        val product = getProductById(productId)
-            ?: throw IllegalStateException("Produk tidak ditemukan.")
-        val prevStock = product.stock
-        val newStock = when (type) {
-            "IN" -> {
-                if (quantityInput == 0) throw IllegalArgumentException("Jumlah stok masuk harus lebih dari 0.")
-                prevStock + quantityInput
-            }
-            "OUT" -> {
-                if (quantityInput == 0) throw IllegalArgumentException("Jumlah stok keluar harus lebih dari 0.")
-                val target = prevStock - quantityInput
-                if (!allowNegativeStock && target < 0) {
-                    throw IllegalStateException("Stok tidak mencukupi untuk dikeluarkan (Stok saat ini: $prevStock).")
-                }
-                target
-            }
-            "ADJUSTMENT" -> {
-                quantityInput
-            }
-            else -> throw IllegalArgumentException("Tipe perubahan stok tidak dikenal.")
-        }
-
-        val delta = newStock - prevStock
-        val now = System.currentTimeMillis()
-        updateProduct(
-            product.copy(
-                stock = newStock,
-                updatedAt = now
-            )
-        )
-        insertStockMovement(
-            StockMovementEntity(
-                productId = product.id,
-                productName = product.name,
-                type = type,
-                quantityChange = delta,
-                previousStock = prevStock,
-                newStock = newStock,
-                note = note.ifBlank {
-                    when (type) {
-                        "IN" -> "Stok masuk manual"
-                        "OUT" -> "Stok keluar manual"
-                        else -> "Penyesuaian stok (Stock Opname)"
-                    }
-                },
-                referenceInvoice = "",
-                timestamp = now,
-                userName = userName
-            )
-        )
     }
 
     // --- CLEAR & RESTORE FOR BACKUP ---
@@ -389,9 +353,6 @@ interface KasirDao {
 
     @Query("DELETE FROM transactions")
     suspend fun clearAllTransactions()
-
-    @Query("DELETE FROM stock_movements")
-    suspend fun clearAllStockMovements()
 
     @Query("DELETE FROM products")
     suspend fun clearAllProducts()
@@ -417,12 +378,10 @@ interface KasirDao {
         settings: StoreSettingsEntity?,
         printers: List<PrinterDeviceEntity>,
         transactions: List<TransactionEntity>,
-        transactionItems: List<TransactionItemEntity>,
-        stockMovements: List<StockMovementEntity>
+        transactionItems: List<TransactionItemEntity>
     ) {
         clearAllTransactionItems()
         clearAllTransactions()
-        clearAllStockMovements()
         clearAllProducts()
         clearAllCategories()
         clearAllCustomers()
@@ -441,6 +400,5 @@ interface KasirDao {
         if (transactionItems.isNotEmpty()) {
             insertTransactionItems(transactionItems)
         }
-        stockMovements.forEach { insertStockMovement(it) }
     }
 }

@@ -2,12 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Camera permission for barcode scanning (requested only when scanner opened) -->
-    <uses-feature
-        android:name="android.hardware.camera"
-        android:required="false" />
-    <uses-permission android:name="android.permission.CAMERA" />
-
     <!-- Bluetooth permissions tailored by Android version -->
     <uses-permission
         android:name="android.permission.BLUETOOTH"

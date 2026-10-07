@@ -13,7 +13,6 @@ import com.example.data.KasirDatabase
 import com.example.data.KasirRepository
 import com.example.data.PrinterDeviceEntity
 import com.example.data.ProductEntity
-import com.example.data.StockMovementEntity
 import com.example.data.StoreSettingsEntity
 import com.example.data.TransactionWithItems
 import com.example.service.BackupAndExportService
@@ -30,21 +29,20 @@ import java.io.File
 
 enum class AppScreen(val title: String) {
     DASHBOARD("Beranda KasirKu"),
-    POS("Kasir / Transaksi"),
-    PRODUCTS("Daftar Produk"),
-    CATEGORIES("Kategori Produk"),
-    STOCK("Manajemen Stok"),
+    POS("Pesan Menu"),
+    PAYMENT("Pembayaran Billing"),
+    PRODUCTS("Daftar Menu"),
+    CATEGORIES("Kategori Menu"),
     CUSTOMERS("Data Pelanggan"),
     HISTORY("Riwayat Transaksi"),
-    REPORTS("Laporan & Analisis"),
-    SETTINGS("Pengaturan Toko")
+    REPORTS("Laporan Penjualan"),
+    SETTINGS("Pengaturan Resto")
 }
 
 enum class ProductSortOption(val label: String) {
     NAME("Nama (A-Z)"),
     PRICE_ASC("Harga Terendah"),
     PRICE_DESC("Harga Tertinggi"),
-    STOCK_ASC("Stok Terendah"),
     NEWEST("Terbaru")
 }
 
@@ -81,10 +79,10 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
     val printers: StateFlow<List<PrinterDeviceEntity>> = repository.printers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val stockMovements: StateFlow<List<StockMovementEntity>> = repository.stockMovements
+    val transactionsWithItems: StateFlow<List<TransactionWithItems>> = repository.transactionsWithItems
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val transactionsWithItems: StateFlow<List<TransactionWithItems>> = repository.transactionsWithItems
+    val unpaidBillings: StateFlow<List<TransactionWithItems>> = repository.unpaidBillingsWithItems
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // --- NAVIGATION & SESSION STATE ---
@@ -104,21 +102,34 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
-    // --- CART & POS STATE ---
+    // --- PROSES PESAN (ACTIVE ORDER BILLING STATE) ---
+    private val _editingTransactionId = MutableStateFlow<Long?>(null)
+    val editingTransactionId: StateFlow<Long?> = _editingTransactionId.asStateFlow()
+
+    private val _activeBillingNumber = MutableStateFlow(1)
+    val activeBillingNumber: StateFlow<Int> = _activeBillingNumber.asStateFlow()
+
     private val _cartItems = MutableStateFlow<List<CartItem>>(emptyList())
     val cartItems: StateFlow<List<CartItem>> = _cartItems.asStateFlow()
 
     private val _selectedCustomer = MutableStateFlow<CustomerEntity?>(null)
     val selectedCustomer: StateFlow<CustomerEntity?> = _selectedCustomer.asStateFlow()
 
+    private val _transactionNote = MutableStateFlow("")
+    val transactionNote: StateFlow<String> = _transactionNote.asStateFlow()
+
+    private val _lastSentKitchenOrder = MutableStateFlow<TransactionWithItems?>(null)
+    val lastSentKitchenOrder: StateFlow<TransactionWithItems?> = _lastSentKitchenOrder.asStateFlow()
+
+    // --- PROSES BAYAR (SELECTED UNPAID BILLING STATE) ---
+    private val _selectedBillingForPayment = MutableStateFlow<TransactionWithItems?>(null)
+    val selectedBillingForPayment: StateFlow<TransactionWithItems?> = _selectedBillingForPayment.asStateFlow()
+
     private val _discountInput = MutableStateFlow(0.0)
     val discountInput: StateFlow<Double> = _discountInput.asStateFlow()
 
     private val _serviceFeeInput = MutableStateFlow(0.0)
     val serviceFeeInput: StateFlow<Double> = _serviceFeeInput.asStateFlow()
-
-    private val _transactionNote = MutableStateFlow("")
-    val transactionNote: StateFlow<String> = _transactionNote.asStateFlow()
 
     private val _paymentMethod = MutableStateFlow("Tunai")
     val paymentMethod: StateFlow<String> = _paymentMethod.asStateFlow()
@@ -137,6 +148,28 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
                 } else if (_activeCashier.value != null) {
                     val updated = list.find { it.id == _activeCashier.value?.id }
                     if (updated != null) _activeCashier.value = updated
+                }
+            }
+        }
+        viewModelScope.launch {
+            transactionsWithItems.collect { allTx ->
+                if (_editingTransactionId.value == null) {
+                    val maxBilling = allTx.maxOfOrNull { it.transaction.billingNumber } ?: 0
+                    _activeBillingNumber.value = maxBilling + 1
+                } else {
+                    val existing = allTx.find { it.transaction.id == _editingTransactionId.value }
+                    if (existing != null && existing.transaction.status != "UNPAID") {
+                        startNewOrderBilling()
+                    }
+                }
+                val selectedPay = _selectedBillingForPayment.value
+                if (selectedPay != null) {
+                    val refreshed = allTx.find { it.transaction.id == selectedPay.transaction.id }
+                    if (refreshed == null || refreshed.transaction.status != "UNPAID") {
+                        _selectedBillingForPayment.value = null
+                    } else {
+                        _selectedBillingForPayment.value = refreshed
+                    }
                 }
             }
         }
@@ -206,27 +239,67 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- CART OPERATIONS ---
+    // --- PROSES PESAN: ORDERING & ACTIVE BILLING OPERATIONS ---
+    fun startNewOrderBilling() {
+        val maxBilling = transactionsWithItems.value.maxOfOrNull { it.transaction.billingNumber } ?: 0
+        _editingTransactionId.value = null
+        _activeBillingNumber.value = maxBilling + 1
+        _cartItems.value = emptyList()
+        _selectedCustomer.value = null
+        _transactionNote.value = ""
+    }
+
+    fun loadUnpaidBillingIntoPos(txWithItems: TransactionWithItems) {
+        val tx = txWithItems.transaction
+        val allProds = products.value.associateBy { it.id }
+        val loadedCart = txWithItems.items.map { item ->
+            val prod = allProds[item.productId] ?: ProductEntity(
+                id = item.productId,
+                name = item.productName,
+                buyPrice = item.buyPrice,
+                sellPrice = item.sellPrice,
+                unit = item.unit,
+                categoryName = item.categoryName
+            )
+            CartItem(
+                product = prod,
+                quantity = item.quantity,
+                portionNotes = item.portionNotes
+            )
+        }
+        _editingTransactionId.value = tx.id
+        _activeBillingNumber.value = tx.billingNumber
+        _cartItems.value = loadedCart
+        _selectedCustomer.value = customers.value.find { it.id == tx.customerId }
+        _transactionNote.value = tx.notes
+        _currentScreen.value = AppScreen.POS
+        showMessage("Memuat ${tx.billingDisplay} untuk tambah/ubah pesanan.")
+    }
+
     fun addProductToCart(product: ProductEntity) {
         if (!product.isActive) {
-            showMessage("Produk '${product.name}' sedang dinonaktifkan.")
+            showMessage("Menu '${product.name}' sedang dinonaktifkan.")
             return
         }
-        val s = settings.value
         val currentList = _cartItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.product.id == product.id }
-        val currentQty = if (index >= 0) currentList[index].quantity else 0
-        val nextQty = currentQty + 1
-
-        if (s.autoReduceStock && !s.allowNegativeStock && nextQty > product.stock) {
-            showMessage("Stok '${product.name}' tidak mencukupi (Tersisa: ${product.stock} ${product.unit}).")
-            return
-        }
-
         if (index >= 0) {
-            currentList[index] = currentList[index].copy(product = product, quantity = nextQty)
+            val existing = currentList[index]
+            val nextQty = existing.quantity + 1
+            val updatedNotes = SecurityAndFormatUtils.normalizePortionNotes(existing.portionNotes, nextQty)
+            currentList[index] = existing.copy(
+                product = product,
+                quantity = nextQty,
+                portionNotes = updatedNotes
+            )
         } else {
-            currentList.add(CartItem(product = product, quantity = 1))
+            currentList.add(
+                CartItem(
+                    product = product,
+                    quantity = 1,
+                    portionNotes = listOf("")
+                )
+            )
         }
         _cartItems.value = currentList
     }
@@ -236,26 +309,29 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
             removeCartItem(productId)
             return
         }
-        val s = settings.value
         val currentList = _cartItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.product.id == productId }
         if (index >= 0) {
             val item = currentList[index]
             val latestProduct = products.value.find { it.id == productId } ?: item.product
-            if (s.autoReduceStock && !s.allowNegativeStock && newQuantity > latestProduct.stock) {
-                showMessage("Stok '${latestProduct.name}' hanya tersedia ${latestProduct.stock} ${latestProduct.unit}.")
-                return
-            }
-            currentList[index] = item.copy(product = latestProduct, quantity = newQuantity)
+            val updatedNotes = SecurityAndFormatUtils.normalizePortionNotes(item.portionNotes, newQuantity)
+            currentList[index] = item.copy(
+                product = latestProduct,
+                quantity = newQuantity,
+                portionNotes = updatedNotes
+            )
             _cartItems.value = currentList
         }
     }
 
-    fun updateCartItemNote(productId: Long, note: String) {
+    fun updateCartItemPortionNotes(productId: Long, portionNotes: List<String>) {
         val currentList = _cartItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.product.id == productId }
         if (index >= 0) {
-            currentList[index] = currentList[index].copy(note = note)
+            val item = currentList[index]
+            currentList[index] = item.copy(
+                portionNotes = SecurityAndFormatUtils.normalizePortionNotes(portionNotes, item.quantity)
+            )
             _cartItems.value = currentList
         }
     }
@@ -265,17 +341,56 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearCart() {
-        _cartItems.value = emptyList()
-        _selectedCustomer.value = null
-        _discountInput.value = 0.0
-        _serviceFeeInput.value = settings.value.defaultServiceFee
-        _transactionNote.value = ""
-        _paymentMethod.value = "Tunai"
-        _amountPaidInput.value = ""
+        startNewOrderBilling()
     }
 
     fun setCustomer(customer: CustomerEntity?) {
         _selectedCustomer.value = customer
+    }
+
+    fun setTransactionNote(note: String) {
+        _transactionNote.value = note
+    }
+
+    fun dismissLastSentKitchenOrder() {
+        _lastSentKitchenOrder.value = null
+    }
+
+    fun sendOrderToKitchen(context: Context, onOrderSent: (TransactionWithItems) -> Unit = {}) {
+        viewModelScope.launch {
+            val cashier = _activeCashier.value ?: CashierUserEntity(id = 1, name = "Admin Resto")
+            val result = repository.sendOrderToKitchen(
+                existingTransactionId = _editingTransactionId.value,
+                billingNumber = _activeBillingNumber.value,
+                cartItems = _cartItems.value,
+                cashier = cashier,
+                customer = _selectedCustomer.value,
+                notes = _transactionNote.value
+            )
+
+            result.onSuccess { savedOrder ->
+                _lastSentKitchenOrder.value = savedOrder
+                startNewOrderBilling()
+                showMessage("${savedOrder.transaction.billingDisplay} dikirim ke dapur (Status: BELUM BAYAR).")
+                onOrderSent(savedOrder)
+
+                val s = settings.value
+                if (s.autoPrintKitchenTicket && s.defaultPrinterAddress.isNotBlank()) {
+                    printKitchenTicketBluetooth(context, savedOrder)
+                }
+            }.onFailure { err ->
+                showMessage(err.message ?: "Gagal menyimpan pesanan.")
+            }
+        }
+    }
+
+    // --- PROSES BAYAR: PAYMENT OF UNPAID BILLINGS ---
+    fun selectBillingForPayment(txWithItems: TransactionWithItems?) {
+        _selectedBillingForPayment.value = txWithItems
+        _discountInput.value = txWithItems?.transaction?.discountAmount ?: 0.0
+        _serviceFeeInput.value = txWithItems?.transaction?.serviceFee ?: settings.value.defaultServiceFee
+        _paymentMethod.value = "Tunai"
+        _amountPaidInput.value = ""
     }
 
     fun setDiscount(discount: Double) {
@@ -284,10 +399,6 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setServiceFee(fee: Double) {
         _serviceFeeInput.value = fee.coerceAtLeast(0.0)
-    }
-
-    fun setTransactionNote(note: String) {
-        _transactionNote.value = note
     }
 
     fun setPaymentMethod(method: String) {
@@ -302,21 +413,8 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         _lastCompletedTransaction.value = null
     }
 
-    fun scanAndAddProductByBarcode(code: String, onNotFound: (String) -> Unit = {}) {
-        viewModelScope.launch {
-            val product = repository.findProductByBarcodeOrSku(code)
-            if (product != null) {
-                addProductToCart(product)
-                showMessage("Ditambahkan: ${product.name}")
-            } else {
-                showMessage("Produk dengan barcode/SKU '$code' tidak ditemukan.")
-                onNotFound(code)
-            }
-        }
-    }
-
-    fun calculateCartTotals(): CartCalculation {
-        val items = _cartItems.value
+    fun calculateBillingPaymentTotals(billing: TransactionWithItems?): PaymentCalculation {
+        val items = billing?.items ?: emptyList()
         val s = settings.value
         val subtotal = items.sumOf { it.subtotal }
         val discount = if (s.enableDiscount) _discountInput.value.coerceIn(0.0, subtotal) else 0.0
@@ -331,14 +429,16 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         } else 0.0
         val finalTotal = (rawTotal + rounding).coerceAtLeast(0.0)
 
-        val paidVal = if (_paymentMethod.value.equals("Tunai", ignoreCase = true)) {
+        val isTunai = _paymentMethod.value.equals("Tunai", ignoreCase = true)
+        val paidVal = if (isTunai) {
             _amountPaidInput.value.replace(Regex("[^0-9.]"), "").toDoubleOrNull() ?: 0.0
         } else {
             finalTotal
         }
         val change = (paidVal - finalTotal).coerceAtLeast(0.0)
+        val shortage = (finalTotal - paidVal).coerceAtLeast(0.0)
 
-        return CartCalculation(
+        return PaymentCalculation(
             subtotal = subtotal,
             discountAmount = discount,
             taxPercent = taxPercent,
@@ -347,44 +447,49 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
             roundingAmount = rounding,
             finalTotal = finalTotal,
             amountPaid = paidVal,
-            changeAmount = change
+            changeAmount = change,
+            shortageAmount = shortage,
+            isSufficient = !isTunai || paidVal >= finalTotal
         )
     }
 
-    fun submitPayment(context: Context, onSuccess: (TransactionWithItems) -> Unit = {}) {
+    fun completeSelectedBillingPayment(context: Context, onSuccess: (TransactionWithItems) -> Unit = {}) {
+        val targetBilling = _selectedBillingForPayment.value
+        if (targetBilling == null) {
+            showMessage("Pilih Billing yang ingin dibayar terlebih dahulu.")
+            return
+        }
         viewModelScope.launch {
-            val calc = calculateCartTotals()
-            val cashier = _activeCashier.value ?: CashierUserEntity(id = 1, name = "Admin Utama")
-            val result = repository.processCheckout(
-                cartItems = _cartItems.value,
+            val calc = calculateBillingPaymentTotals(targetBilling)
+            val cashier = _activeCashier.value ?: CashierUserEntity(id = 1, name = "Admin Resto")
+            val result = repository.processBillingPayment(
+                transactionId = targetBilling.transaction.id,
                 cashier = cashier,
-                customer = _selectedCustomer.value,
                 discountAmount = calc.discountAmount,
-                taxPercentage = calc.taxPercent,
                 serviceFee = calc.serviceFee,
                 paymentMethod = _paymentMethod.value,
-                amountPaid = calc.amountPaid,
-                notes = _transactionNote.value
+                amountPaid = calc.amountPaid
             )
 
-            result.onSuccess { txWithItems ->
-                _lastCompletedTransaction.value = txWithItems
-                clearCart()
-                showMessage("Transaksi ${txWithItems.transaction.invoiceNumber} berhasil disimpan!")
-                onSuccess(txWithItems)
+            result.onSuccess { paidTx ->
+                _selectedBillingForPayment.value = null
+                _lastCompletedTransaction.value = paidTx
+                _amountPaidInput.value = ""
+                _discountInput.value = 0.0
+                showMessage("${paidTx.transaction.billingDisplay} LUNAS!")
+                onSuccess(paidTx)
 
-                // Auto print if configured
                 val s = settings.value
                 if (s.autoPrintReceipt && s.defaultPrinterAddress.isNotBlank()) {
-                    printReceiptBluetooth(context, txWithItems)
+                    printReceiptBluetooth(context, paidTx)
                 }
             }.onFailure { err ->
-                showMessage(err.message ?: "Gagal memproses transaksi pembayaran.")
+                showMessage(err.message ?: "Gagal menyelesaikan pembayaran.")
             }
         }
     }
 
-    // --- PRODUCT, CATEGORY, STOCK, CUSTOMER, USER CRUD ---
+    // --- PRODUCT, CATEGORY, CUSTOMER, USER CRUD ---
     fun saveCategory(category: CategoryEntity, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
             repository.saveCategory(category)
@@ -396,49 +501,62 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun deleteCategory(category: CategoryEntity) {
+    fun moveProductsBetweenCategories(
+        fromCategory: CategoryEntity,
+        toCategory: CategoryEntity,
+        onSuccess: () -> Unit = {}
+    ) {
         viewModelScope.launch {
-            repository.deleteCategory(category)
-                .onSuccess { showMessage("Kategori '${category.name}' dihapus.") }
+            repository.moveProductsBetweenCategories(fromCategory.id, toCategory)
+                .onSuccess {
+                    showMessage("Semua menu dari '${fromCategory.name}' dipindahkan ke '${toCategory.name}'.")
+                    onSuccess()
+                }
+                .onFailure { showMessage(it.message ?: "Gagal memindahkan menu.") }
+        }
+    }
+
+    fun deleteCategory(
+        category: CategoryEntity,
+        moveToCategory: CategoryEntity? = null,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            repository.deleteCategoryWithOptionalMove(category, moveToCategory)
+                .onSuccess {
+                    showMessage("Kategori '${category.name}' berhasil dihapus.")
+                    onSuccess()
+                }
                 .onFailure { showMessage(it.message ?: "Gagal menghapus kategori.") }
         }
     }
 
     fun saveProduct(product: ProductEntity, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
-            val cashierName = _activeCashier.value?.name ?: "Admin"
-            repository.saveProduct(product, cashierName)
+            repository.saveProduct(product)
                 .onSuccess {
-                    showMessage("Produk '${product.name}' berhasil disimpan.")
+                    showMessage("Menu '${product.name}' berhasil disimpan.")
                     onSuccess()
                 }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan produk.") }
+                .onFailure { showMessage(it.message ?: "Gagal menyimpan menu.") }
+        }
+    }
+
+    fun moveSingleProductCategory(product: ProductEntity, targetCategory: CategoryEntity) {
+        viewModelScope.launch {
+            repository.moveSingleProductToCategory(product, targetCategory)
+                .onSuccess {
+                    showMessage("'${product.name}' dipindahkan ke kategori '${targetCategory.name}'.")
+                }
+                .onFailure { showMessage(it.message ?: "Gagal memindahkan kategori menu.") }
         }
     }
 
     fun deleteProduct(product: ProductEntity) {
         viewModelScope.launch {
             repository.deleteProduct(product)
-                .onSuccess { showMessage("Produk '${product.name}' telah dihapus.") }
-                .onFailure { showMessage(it.message ?: "Gagal menghapus produk.") }
-        }
-    }
-
-    fun adjustStock(
-        productId: Long,
-        type: String,
-        quantityInput: Int,
-        note: String,
-        onSuccess: () -> Unit = {}
-    ) {
-        viewModelScope.launch {
-            val userName = _activeCashier.value?.name ?: "Admin"
-            repository.adjustStock(productId, type, quantityInput, note, userName)
-                .onSuccess {
-                    showMessage("Perubahan stok berhasil disimpan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal mengubah stok.") }
+                .onSuccess { showMessage("Menu '${product.name}' telah dihapus.") }
+                .onFailure { showMessage(it.message ?: "Gagal menghapus menu.") }
         }
     }
 
@@ -484,7 +602,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.saveSettings(newSettings)
                 .onSuccess {
-                    showMessage("Pengaturan toko berhasil disimpan.")
+                    showMessage("Pengaturan berhasil disimpan.")
                     onSuccess()
                 }
                 .onFailure { showMessage(it.message ?: "Gagal menyimpan pengaturan.") }
@@ -493,23 +611,48 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelTransaction(transactionId: Long, reason: String, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
-            val cancelledBy = _activeCashier.value?.name ?: "Admin"
-            repository.cancelTransaction(transactionId, reason, cancelledBy)
+            repository.cancelTransaction(transactionId, reason)
                 .onSuccess {
-                    showMessage("Transaksi berhasil dibatalkan & stok telah dikembalikan otomatis.")
+                    showMessage("Billing berhasil dibatalkan.")
                     onSuccess()
                 }
-                .onFailure { showMessage(it.message ?: "Gagal membatalkan transaksi.") }
+                .onFailure { showMessage(it.message ?: "Gagal membatalkan billing.") }
         }
     }
 
-    // --- PRINTER OPERATIONS ---
+    // --- PRINTER & TICKET OPERATIONS ---
     fun selectDefaultPrinter(name: String, address: String, paperSizeMm: Int) {
         viewModelScope.launch {
             repository.setDefaultPrinter(name, address, paperSizeMm)
                 .onSuccess { showMessage("Printer default diatur ke: $name ($paperSizeMm mm)") }
                 .onFailure { showMessage(it.message ?: "Gagal menyimpan printer default.") }
         }
+    }
+
+    fun printKitchenTicketBluetooth(
+        context: Context,
+        txWithItems: TransactionWithItems,
+        printerAddressOverride: String? = null
+    ) {
+        viewModelScope.launch {
+            showMessage("Mencetak tiket dapur ${txWithItems.transaction.billingDisplay}...")
+            BluetoothPrinterService.printKitchenTicketToBluetooth(
+                context = context,
+                txWithItems = txWithItems,
+                settings = settings.value,
+                printerAddressOverride = printerAddressOverride
+            ).onSuccess { showMessage(it) }
+                .onFailure { showMessage(it.message ?: "Gagal mencetak tiket dapur.") }
+        }
+    }
+
+    fun shareKitchenTicketText(context: Context, txWithItems: TransactionWithItems) {
+        val text = BluetoothPrinterService.formatKitchenTicketText(txWithItems, settings.value.paperSizeMm)
+        BackupAndExportService.sharePlainText(
+            context = context,
+            text = text,
+            subject = "Pesanan Dapur - ${txWithItems.transaction.billingDisplay}"
+        )
     }
 
     fun printReceiptBluetooth(
@@ -548,7 +691,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         BackupAndExportService.sharePlainText(
             context = context,
             text = text,
-            subject = "Struk ${settings.value.storeName} - ${txWithItems.transaction.invoiceNumber}"
+            subject = "Struk ${settings.value.storeName} - ${txWithItems.transaction.billingDisplay}"
         )
     }
 
@@ -614,7 +757,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
             val dao = repository.getDao()
             BackupAndExportService.exportProductsCsvToUri(context, uri, dao)
                 .onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Gagal export produk ke CSV.") }
+                .onFailure { showMessage(it.message ?: "Gagal export menu ke CSV.") }
         }
     }
 
@@ -623,7 +766,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
             val dao = repository.getDao()
             BackupAndExportService.importProductsCsvFromUri(context, uri, dao)
                 .onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Gagal import produk dari CSV.") }
+                .onFailure { showMessage(it.message ?: "Gagal import menu dari CSV.") }
         }
     }
 
@@ -639,8 +782,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
                 val csv = BackupAndExportService.buildReportCsv(
                     reportTitle = reportTitle,
                     periodLabel = periodLabel,
-                    transactions = filteredTransactions,
-                    products = products.value
+                    transactions = filteredTransactions
                 )
                 context.contentResolver.openOutputStream(uri)?.use { out ->
                     out.write(csv.toByteArray(Charsets.UTF_8))
@@ -664,8 +806,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
                 context = context,
                 storeName = settings.value.storeName,
                 periodLabel = periodLabel,
-                transactions = filteredTransactions,
-                products = products.value
+                transactions = filteredTransactions
             ).onSuccess { file ->
                 BackupAndExportService.shareFile(
                     context = context,
@@ -680,7 +821,7 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
-data class CartCalculation(
+data class PaymentCalculation(
     val subtotal: Double,
     val discountAmount: Double,
     val taxPercent: Double,
@@ -689,5 +830,7 @@ data class CartCalculation(
     val roundingAmount: Double,
     val finalTotal: Double,
     val amountPaid: Double,
-    val changeAmount: Double
+    val changeAmount: Double,
+    val shortageAmount: Double,
+    val isSufficient: Boolean
 )
