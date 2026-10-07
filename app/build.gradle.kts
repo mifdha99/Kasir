@@ -128,7 +128,7 @@ dependencies {
 
     implementation(libs.coil.compose)
 
-    implementation(libs.zxing.core)
+    
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)
