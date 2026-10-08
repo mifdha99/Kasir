@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -10,8 +9,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,23 +29,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -69,134 +68,86 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.data.CategoryEntity
 import com.example.data.ProductEntity
 import com.example.util.SecurityAndFormatUtils
-import com.example.viewmodel.ProductSortOption
 
 @Composable
 fun ProductScreen(
     products: List<ProductEntity>,
     categories: List<CategoryEntity>,
-    onSaveProduct: (ProductEntity) -> Unit,
-    onMoveProductCategory: (ProductEntity, CategoryEntity) -> Unit,
+    canEditPrice: Boolean,
+    onSaveProduct: (
+        id: Long,
+        name: String,
+        sellPrice: Double,
+        unit: String,
+        categoryId: Long,
+        categoryName: String,
+        description: String,
+        imageUri: String,
+        isActive: Boolean
+    ) -> Unit,
     onDeleteProduct: (ProductEntity) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategoryId by remember { mutableStateOf<Long?>(null) }
-    var sortOption by remember { mutableStateOf(ProductSortOption.NAME) }
-    var showSortMenu by remember { mutableStateOf(false) }
+    var sortOption by remember { mutableStateOf("NAMA") } // NAMA, HARGA, TERBARU
 
+    var showProductForm by remember { mutableStateOf(false) }
     var editingProduct by remember { mutableStateOf<ProductEntity?>(null) }
-    var isAddingNew by remember { mutableStateOf(false) }
     var productToDelete by remember { mutableStateOf<ProductEntity?>(null) }
-    var productToMoveCategory by remember { mutableStateOf<ProductEntity?>(null) }
 
     val filteredAndSorted = remember(products, searchQuery, selectedCategoryId, sortOption) {
         val filtered = products.filter { p ->
             (selectedCategoryId == null || p.categoryId == selectedCategoryId) &&
                 (searchQuery.isBlank() ||
                     p.name.contains(searchQuery, ignoreCase = true) ||
-                    p.categoryName.contains(searchQuery, ignoreCase = true) ||
-                    p.description.contains(searchQuery, ignoreCase = true))
+                    p.categoryName.contains(searchQuery, ignoreCase = true))
         }
         when (sortOption) {
-            ProductSortOption.NAME -> filtered.sortedBy { it.name.lowercase() }
-            ProductSortOption.PRICE_ASC -> filtered.sortedBy { it.sellPrice }
-            ProductSortOption.PRICE_DESC -> filtered.sortedByDescending { it.sellPrice }
-            ProductSortOption.NEWEST -> filtered.sortedByDescending { it.createdAt }
+            "HARGA" -> filtered.sortedBy { it.sellPrice }
+            "TERBARU" -> filtered.sortedByDescending { it.updatedAt }
+            else -> filtered.sortedBy { it.name.lowercase() }
         }
     }
 
-    if (isAddingNew || editingProduct != null) {
-        val defaultCat = categories.firstOrNull()
+    if (showProductForm) {
         ProductFormDialog(
-            initialProduct = editingProduct ?: ProductEntity(
-                name = "",
-                categoryId = defaultCat?.id ?: 0L,
-                categoryName = defaultCat?.name ?: "Makanan"
-            ),
+            initialProduct = editingProduct,
             categories = categories,
+            canEditPrice = canEditPrice,
             onDismiss = {
-                isAddingNew = false
+                showProductForm = false
                 editingProduct = null
             },
-            onSave = { saved ->
-                onSaveProduct(saved)
-                isAddingNew = false
+            onSave = { id, name, sellPrice, unit, catId, catName, desc, img, active ->
+                onSaveProduct(id, name, sellPrice, unit, catId, catName, desc, img, active)
+                showProductForm = false
                 editingProduct = null
-            }
-        )
-    }
-
-    if (productToMoveCategory != null) {
-        val targetProduct = productToMoveCategory!!
-        AlertDialog(
-            onDismissRequest = { productToMoveCategory = null },
-            title = { Text("Pindahkan Kategori Menu", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Pilih kategori tujuan untuk '${targetProduct.name}' (Saat ini: ${targetProduct.categoryName}):",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    categories.forEach { cat ->
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (cat.id == targetProduct.categoryId) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceVariant
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onMoveProductCategory(targetProduct, cat)
-                                    productToMoveCategory = null
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(cat.name, fontWeight = FontWeight.Bold)
-                                if (cat.id == targetProduct.categoryId) {
-                                    Text("Saat Ini", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { productToMoveCategory = null }) {
-                    Text("Tutup")
-                }
             }
         )
     }
 
     if (productToDelete != null) {
-        val target = productToDelete!!
         AlertDialog(
             onDismissRequest = { productToDelete = null },
             title = { Text("Hapus Menu?", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Apakah Anda yakin ingin menghapus '${target.name}' dari daftar menu?")
+                Text("Apakah Anda yakin ingin menghapus menu \"${productToDelete?.name}\"? Riwayat transaksi lama tetap aman.")
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onDeleteProduct(target)
+                        productToDelete?.let { onDeleteProduct(it) }
                         productToDelete = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Ya, Hapus")
+                    Text("Hapus")
                 }
             },
             dismissButton = {
@@ -210,7 +161,10 @@ fun ProductScreen(
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { isAddingNew = true },
+                onClick = {
+                    editingProduct = null
+                    showProductForm = true
+                },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.testTag("fab_add_product")
@@ -230,196 +184,198 @@ fun ProductScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            // Search & Sort Header
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 2.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("Cari nama makanan atau minuman...") },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                            trailingIcon = {
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { searchQuery = "" }) {
-                                        Icon(Icons.Default.Close, contentDescription = "Hapus")
-                                    }
-                                }
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("product_search_input")
-                        )
-
-                        Box {
-                            OutlinedButton(
-                                onClick = { showSortMenu = true },
-                                shape = RoundedCornerShape(14.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp)
-                            ) {
-                                Icon(Icons.Default.Sort, contentDescription = "Urutkan")
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(sortOption.label, style = MaterialTheme.typography.labelMedium)
-                            }
-
-                            DropdownMenu(
-                                expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false }
-                            ) {
-                                ProductSortOption.entries.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.label) },
-                                        onClick = {
-                                            sortOption = option
-                                            showSortMenu = false
-                                        }
-                                    )
-                                }
-                            }
+            // Search Bar
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Cari nama makanan atau minuman...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "Hapus")
                         }
                     }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("product_search_input")
+            )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item {
-                            FilterChip(
-                                selected = selectedCategoryId == null,
-                                onClick = { selectedCategoryId = null },
-                                label = { Text("Semua (${products.size})") }
-                            )
-                        }
-                        items(categories, key = { it.id }) { cat ->
-                            FilterChip(
-                                selected = selectedCategoryId == cat.id,
-                                onClick = {
-                                    selectedCategoryId = if (selectedCategoryId == cat.id) null else cat.id
-                                },
-                                label = { Text(cat.name) }
-                            )
-                        }
-                    }
+            // Category Filter & Sort Chips
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterChip(
+                        selected = selectedCategoryId == null,
+                        onClick = { selectedCategoryId = null },
+                        label = { Text("Semua (${products.size})") }
+                    )
+                }
+                items(categories, key = { it.id }) { cat ->
+                    FilterChip(
+                        selected = selectedCategoryId == cat.id,
+                        onClick = {
+                            selectedCategoryId = if (selectedCategoryId == cat.id) null else cat.id
+                        },
+                        label = { Text(cat.name) }
+                    )
                 }
             }
 
-            LazyColumn(
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 88.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxSize()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                items(filteredAndSorted, key = { it.id }) { product ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { editingProduct = product },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
-                        Row(
+                Text("Urutkan:", style = MaterialTheme.typography.labelMedium)
+                listOf("NAMA" to "Nama", "HARGA" to "Harga", "TERBARU" to "Terbaru").forEach { (key, label) ->
+                    FilterChip(
+                        selected = sortOption == key,
+                        onClick = { sortOption = key },
+                        label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (filteredAndSorted.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.Restaurant,
+                            contentDescription = null,
+                            modifier = Modifier.size(56.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Belum ada menu yang sesuai filter", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 88.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(filteredAndSorted, key = { it.id }) { product ->
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (product.imageUri.isNotBlank()) {
-                                AsyncImage(
-                                    model = Uri.parse(product.imageUri),
-                                    contentDescription = product.name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .size(64.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(64.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(MaterialTheme.colorScheme.primaryContainer),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = product.name.take(2).uppercase(),
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
+                                .clickable {
+                                    editingProduct = product
+                                    showProductForm = true
                                 }
-                            }
-
-                            Spacer(modifier = Modifier.width(12.dp))
-
-                            Column(modifier = Modifier.weight(1f)) {
+                                .testTag("product_item_${product.id}"),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    modifier = Modifier.weight(1f)
                                 ) {
-                                    Text(
-                                        text = product.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (!product.isActive) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = MaterialTheme.colorScheme.errorContainer
+                                    if (product.imageUri.isNotBlank()) {
+                                        AsyncImage(
+                                            model = Uri.parse(product.imageUri),
+                                            contentDescription = product.name,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(56.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(56.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                                            contentAlignment = Alignment.Center
                                         ) {
                                             Text(
-                                                "NONAKTIF",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                text = product.name.take(2).uppercase(),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = MaterialTheme.colorScheme.primary
                                             )
                                         }
                                     }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = product.name,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (!product.isActive) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.errorContainer,
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "NONAKTIF",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            text = "${product.categoryName} • per ${product.unit}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = SecurityAndFormatUtils.formatRupiah(product.sellPrice),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 }
 
-                                Text(
-                                    text = "Kategori: ${product.categoryName} • Satuan: ${product.unit}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
-                                Text(
-                                    text = SecurityAndFormatUtils.formatRupiah(product.sellPrice),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-
-                                if (product.description.isNotBlank()) {
-                                    Text(
-                                        text = product.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            Column {
-                                IconButton(onClick = { editingProduct = product }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Edit Menu", tint = MaterialTheme.colorScheme.primary)
-                                }
-                                IconButton(onClick = { productToMoveCategory = product }) {
-                                    Icon(Icons.Default.DriveFileMove, contentDescription = "Pindah Kategori", tint = MaterialTheme.colorScheme.secondary)
-                                }
-                                IconButton(onClick = { productToDelete = product }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Hapus Menu", tint = MaterialTheme.colorScheme.error)
+                                Row {
+                                    IconButton(
+                                        onClick = {
+                                            editingProduct = product
+                                            showProductForm = true
+                                        }
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = "Edit Menu",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { productToDelete = product }
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = "Hapus Menu",
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -430,39 +386,52 @@ fun ProductScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ProductFormDialog(
-    initialProduct: ProductEntity,
+    initialProduct: ProductEntity?,
     categories: List<CategoryEntity>,
+    canEditPrice: Boolean,
     onDismiss: () -> Unit,
-    onSave: (ProductEntity) -> Unit
+    onSave: (
+        id: Long,
+        name: String,
+        sellPrice: Double,
+        unit: String,
+        categoryId: Long,
+        categoryName: String,
+        description: String,
+        imageUri: String,
+        isActive: Boolean
+    ) -> Unit
 ) {
     val context = LocalContext.current
+    var name by remember { mutableStateOf(initialProduct?.name ?: "") }
+    var sellPriceInput by remember {
+        mutableStateOf(if (initialProduct != null && initialProduct.sellPrice > 0) initialProduct.sellPrice.toLong().toString() else "")
+    }
+    var unit by remember { mutableStateOf(initialProduct?.unit ?: "Porsi") }
+    var description by remember { mutableStateOf(initialProduct?.description ?: "") }
+    var imageUri by remember { mutableStateOf(initialProduct?.imageUri ?: "") }
+    var isActive by remember { mutableStateOf(initialProduct?.isActive ?: true) }
 
-    var name by remember { mutableStateOf(initialProduct.name) }
-    var sellPriceText by remember {
-        mutableStateOf(if (initialProduct.sellPrice == 0.0) "" else initialProduct.sellPrice.toLong().toString())
+    val defaultCategory = categories.firstOrNull()
+    var selectedCategoryId by remember {
+        mutableStateOf(initialProduct?.categoryId ?: defaultCategory?.id ?: 1L)
     }
-    var buyPriceText by remember {
-        mutableStateOf(if (initialProduct.buyPrice == 0.0) "" else initialProduct.buyPrice.toLong().toString())
+    var selectedCategoryName by remember {
+        mutableStateOf(initialProduct?.categoryName ?: defaultCategory?.name ?: "Makanan")
     }
-    var unit by remember { mutableStateOf(initialProduct.unit.ifBlank { "Porsi" }) }
-    var selectedCategoryId by remember { mutableStateOf(initialProduct.categoryId) }
-    var selectedCategoryName by remember { mutableStateOf(initialProduct.categoryName) }
-    var description by remember { mutableStateOf(initialProduct.description) }
-    var imageUri by remember { mutableStateOf(initialProduct.imageUri) }
-    var isActive by remember { mutableStateOf(initialProduct.isActive) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
+    var categoryDropdownExpanded by remember { mutableStateOf(false) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
+    ) { uri ->
         if (uri != null) {
             try {
                 context.contentResolver.takePersistableUriPermission(
                     uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: Exception) {
             }
@@ -470,238 +439,173 @@ private fun ProductFormDialog(
         }
     }
 
-    val unitOptions = listOf("Porsi", "Gelas", "Cup", "Paket", "Piring", "Mangkok", "Pcs", "Bungkus")
-
-    Dialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Card(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 16.dp),
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+        title = {
+            Text(
+                text = if (initialProduct == null) "Tambah Menu Baru" else "Edit Menu & Harga",
+                fontWeight = FontWeight.ExtraBold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Photo Picker
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        text = if (initialProduct.id == 0L) "Tambah Menu Baru" else "Edit Menu & Harga",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Tutup")
+                    if (imageUri.isNotBlank()) {
+                        AsyncImage(
+                            model = Uri.parse(imageUri),
+                            contentDescription = "Foto Menu",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null)
+                        }
+                    }
+
+                    Column {
+                        OutlinedButton(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                        ) {
+                            Text("Pilih Foto Menu")
+                        }
+                        if (imageUri.isNotBlank()) {
+                            TextButton(onClick = { imageUri = "" }) {
+                                Text("Hapus Foto", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
                     }
                 }
 
-                Column(
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nama Makanan / Minuman *") },
+                    placeholder = { Text("Contoh: Mie Goreng Spesial") },
+                    singleLine = true,
                     modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .fillMaxWidth()
+                        .testTag("input_product_name")
+                )
+
+                ExposedDropdownMenuBox(
+                    expanded = categoryDropdownExpanded,
+                    onExpandedChange = { categoryDropdownExpanded = !categoryDropdownExpanded }
                 ) {
-                    if (errorMsg != null) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = errorMsg!!,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                    }
-
-                    // Photo Picker Row
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        if (imageUri.isNotBlank()) {
-                            AsyncImage(
-                                model = Uri.parse(imageUri),
-                                contentDescription = "Foto Menu",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.Image, contentDescription = null)
-                            }
-                        }
-                        Column {
-                            OutlinedButton(
-                                onClick = {
-                                    photoPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
-                                }
-                            ) {
-                                Text("Pilih Foto Menu")
-                            }
-                            if (imageUri.isNotBlank()) {
-                                TextButton(onClick = { imageUri = "" }) {
-                                    Text("Hapus Foto")
-                                }
-                            }
-                        }
-                    }
-
                     OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it; errorMsg = null },
-                        label = { Text("Nama Makanan / Minuman *") },
-                        singleLine = true,
+                        value = selectedCategoryName,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Kategori Menu") },
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryDropdownExpanded)
+                        },
                         modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                             .fillMaxWidth()
-                            .testTag("input_product_name")
                     )
-
-                    // Category Selection
-                    Text("Kategori Menu", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ExposedDropdownMenu(
+                        expanded = categoryDropdownExpanded,
+                        onDismissRequest = { categoryDropdownExpanded = false }
                     ) {
                         categories.forEach { cat ->
-                            FilterChip(
-                                selected = selectedCategoryId == cat.id || selectedCategoryName.equals(cat.name, ignoreCase = true),
+                            DropdownMenuItem(
+                                text = { Text(cat.name) },
                                 onClick = {
                                     selectedCategoryId = cat.id
                                     selectedCategoryName = cat.name
-                                },
-                                label = { Text(cat.name, fontWeight = FontWeight.SemiBold) }
+                                    categoryDropdownExpanded = false
+                                }
                             )
                         }
                     }
-
-                    // Sell Price & Optional Buy Price
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = sellPriceText,
-                            onValueChange = { sellPriceText = it.filter { ch -> ch.isDigit() } },
-                            label = { Text("Harga Jual (Rp) *") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("input_product_sell_price")
-                        )
-                        OutlinedTextField(
-                            value = buyPriceText,
-                            onValueChange = { buyPriceText = it.filter { ch -> ch.isDigit() } },
-                            label = { Text("Harga Modal (Opsional)") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
-                    // Unit
-                    OutlinedTextField(
-                        value = unit,
-                        onValueChange = { unit = it },
-                        label = { Text("Satuan (Porsi, Gelas, Cup, Paket)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(unitOptions) { u ->
-                            FilterChip(
-                                selected = unit.equals(u, ignoreCase = true),
-                                onClick = { unit = u },
-                                label = { Text(u) }
-                            )
-                        }
-                    }
-
-                    // Description
-                    OutlinedTextField(
-                        value = description,
-                        onValueChange = { description = it },
-                        label = { Text("Keterangan Menu (Opsional)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Status Active Switch
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Status Menu Tersedia", fontWeight = FontWeight.Bold)
-                            Text(
-                                "Jika nonaktif, menu tidak tampil di layar pemesanan",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(checked = isActive, onCheckedChange = { isActive = it })
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
                 }
 
-                Surface(
-                    tonalElevation = 6.dp,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Button(
-                        onClick = {
-                            if (name.trim().isEmpty()) {
-                                errorMsg = "Nama menu wajib diisi!"
-                                return@Button
-                            }
-                            val sell = sellPriceText.toDoubleOrNull() ?: 0.0
-                            val buy = buyPriceText.toDoubleOrNull() ?: 0.0
+                OutlinedTextField(
+                    value = sellPriceInput,
+                    onValueChange = { sellPriceInput = it },
+                    enabled = canEditPrice,
+                    label = { Text("Harga Jual (Rp) *") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_product_sell_price")
+                )
 
-                            onSave(
-                                initialProduct.copy(
-                                    name = name.trim(),
-                                    buyPrice = buy,
-                                    sellPrice = sell,
-                                    unit = unit.trim().ifEmpty { "Porsi" },
-                                    categoryId = selectedCategoryId,
-                                    categoryName = selectedCategoryName.ifBlank { "Makanan" },
-                                    description = description.trim(),
-                                    imageUri = imageUri,
-                                    isActive = isActive
-                                )
-                            )
-                        },
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                            .height(50.dp)
-                            .testTag("btn_save_product")
-                    ) {
-                        Text("Simpan Menu", fontWeight = FontWeight.Bold)
-                    }
+                OutlinedTextField(
+                    value = unit,
+                    onValueChange = { unit = it },
+                    label = { Text("Satuan (Porsi / Gelas / Cup / Bungkus)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Deskripsi Singkat (Opsional)") },
+                    maxLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Tampilkan di Menu Kasir (Aktif)", fontWeight = FontWeight.SemiBold)
+                    Switch(checked = isActive, onCheckedChange = { isActive = it })
                 }
             }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val sellPrice = SecurityAndFormatUtils.parseDoubleInput(sellPriceInput)
+                    onSave(
+                        initialProduct?.id ?: 0L,
+                        name,
+                        sellPrice,
+                        unit,
+                        selectedCategoryId,
+                        selectedCategoryName,
+                        description,
+                        imageUri,
+                        isActive
+                    )
+                },
+                enabled = name.isNotBlank() && sellPriceInput.isNotBlank(),
+                modifier = Modifier.testTag("btn_save_product")
+            ) {
+                Text("Simpan Menu")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Batal")
+            }
         }
-    }
+    )
 }

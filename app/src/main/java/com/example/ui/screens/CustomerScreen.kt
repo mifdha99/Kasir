@@ -78,7 +78,7 @@ fun CustomerScreen(
 
     if (isAddingNew || editingCustomer != null) {
         CustomerFormDialog(
-            initialCustomer = editingCustomer ?: CustomerEntity(name = ""),
+            initialCustomer = editingCustomer ?: CustomerEntity(name = "", phone = ""),
             onDismiss = {
                 isAddingNew = false
                 editingCustomer = null
@@ -241,7 +241,11 @@ fun CustomerScreen(
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Total Transaksi: ${cust.totalTransactions}x • Pembelian: ${SecurityAndFormatUtils.formatRupiah(cust.totalPurchase)}",
+                                    text = if (cust.totalDebt > 0) {
+                                        "Piutang: ${SecurityAndFormatUtils.formatRupiah(cust.totalDebt)}"
+                                    } else {
+                                        "Pelanggan Terdaftar"
+                                    },
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.primary

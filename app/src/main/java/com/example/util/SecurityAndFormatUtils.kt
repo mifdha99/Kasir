@@ -1,6 +1,5 @@
 package com.example.util
 
-import org.json.JSONArray
 import java.security.MessageDigest
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
@@ -10,102 +9,85 @@ import java.util.Locale
 
 object SecurityAndFormatUtils {
 
-    private val indonesiaLocale = Locale("id", "ID")
+    private val localeId = Locale("in", "ID")
+    private val currencyFormat = NumberFormat.getCurrencyInstance(localeId).apply {
+        maximumFractionDigits = 0
+        minimumFractionDigits = 0
+    }
+    private val numberFormat = NumberFormat.getNumberInstance(localeId).apply {
+        maximumFractionDigits = 0
+        minimumFractionDigits = 0
+    }
+
+    private val dateTimeFormatter = SimpleDateFormat("dd MMM yyyy, HH:mm", localeId)
+    private val dateOnlyFormatter = SimpleDateFormat("dd MMM yyyy", localeId)
+    private val receiptDateFormatter = SimpleDateFormat("dd/MM/yyyy HH:mm", localeId)
+    private val invoiceDateFormatter = SimpleDateFormat("yyMMdd", localeId)
+    private val dateKeyFormatter = SimpleDateFormat("yyyy-MM-dd", localeId)
+
+    private const val PORTION_NOTE_DELIM = "||P||"
+
+    fun formatDateKey(timestamp: Long = System.currentTimeMillis()): String {
+        return synchronized(dateKeyFormatter) {
+            dateKeyFormatter.format(Date(timestamp))
+        }
+    }
 
     fun hashPin(pin: String): String {
-        val cleanPin = pin.trim()
-        val digest = MessageDigest.getInstance("SHA-256")
-        val bytes = digest.digest(("kasirku_salt_v1_$cleanPin").toByteArray(Charsets.UTF_8))
+        val bytes = MessageDigest.getInstance("SHA-256").digest(pin.trim().toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
-    fun verifyPin(inputPin: String, storedHash: String): Boolean {
-        if (storedHash.isBlank()) return true
-        return hashPin(inputPin) == storedHash
-    }
-
-    fun formatRupiah(amount: Double): String {
-        val format = NumberFormat.getCurrencyInstance(indonesiaLocale)
-        format.maximumFractionDigits = 0
-        format.minimumFractionDigits = 0
-        return format.format(amount)
+    fun formatRupiah(amount: Double, prefix: String = "Rp"): String {
+        val rounded = kotlin.math.round(amount).toLong()
+        val formatted = synchronized(numberFormat) {
+            numberFormat.format(kotlin.math.abs(rounded))
+        }
+        return if (rounded < 0) "-$prefix $formatted" else "$prefix $formatted"
     }
 
     fun formatNumber(amount: Double): String {
-        val format = NumberFormat.getNumberInstance(indonesiaLocale)
-        format.maximumFractionDigits = 0
-        return format.format(amount)
+        val rounded = kotlin.math.round(amount).toLong()
+        return synchronized(numberFormat) {
+            numberFormat.format(rounded)
+        }
     }
 
-    fun formatDate(timestamp: Long): String {
-        val sdf = SimpleDateFormat("d MMMM yyyy", indonesiaLocale)
-        return sdf.format(Date(timestamp))
-    }
-
-    fun formatTime(timestamp: Long): String {
-        val sdf = SimpleDateFormat("HH:mm", indonesiaLocale)
-        return sdf.format(Date(timestamp))
+    fun parseDoubleInput(input: String): Double {
+        val cleaned = input.replace(".", "").replace(",", ".").replace(Regex("[^0-9.-]"), "")
+        return cleaned.toDoubleOrNull() ?: 0.0
     }
 
     fun formatDateTime(timestamp: Long): String {
-        val sdf = SimpleDateFormat("d MMMM yyyy - HH:mm", indonesiaLocale)
-        return sdf.format(Date(timestamp))
+        return synchronized(dateTimeFormatter) {
+            dateTimeFormatter.format(Date(timestamp))
+        }
+    }
+
+    fun formatDateOnly(timestamp: Long): String {
+        return synchronized(dateOnlyFormatter) {
+            dateOnlyFormatter.format(Date(timestamp))
+        }
     }
 
     fun formatReceiptDateTime(timestamp: Long): String {
-        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm", indonesiaLocale)
-        return sdf.format(Date(timestamp))
-    }
-
-    fun formatInvoiceDate(timestamp: Long): String {
-        val sdf = SimpleDateFormat("yyyyMMdd", indonesiaLocale)
-        return sdf.format(Date(timestamp))
-    }
-
-    fun formatBillingLabel(billingNumber: Int): String {
-        val safeNum = if (billingNumber > 0) billingNumber else 1
-        return "Billing $safeNum"
-    }
-
-    fun encodePortionNotes(notes: List<String>): String {
-        val arr = JSONArray()
-        notes.forEach { arr.put(it.trim()) }
-        return arr.toString()
-    }
-
-    fun decodePortionNotes(json: String, fallbackNote: String = "", quantity: Int = 1): List<String> {
-        if (json.isNotBlank()) {
-            try {
-                val arr = JSONArray(json)
-                val list = mutableListOf<String>()
-                for (i in 0 until arr.length()) {
-                    list.add(arr.optString(i, "").trim())
-                }
-                if (list.isNotEmpty()) {
-                    return normalizePortionNotes(list, quantity)
-                }
-            } catch (_: Exception) {
-            }
-        }
-        val initial = if (fallbackNote.isNotBlank()) listOf(fallbackNote.trim()) else emptyList()
-        return normalizePortionNotes(initial, quantity)
-    }
-
-    fun normalizePortionNotes(existing: List<String>, quantity: Int): List<String> {
-        val count = quantity.coerceAtLeast(1)
-        return List(count) { idx ->
-            existing.getOrNull(idx)?.trim().orEmpty()
+        return synchronized(receiptDateFormatter) {
+            receiptDateFormatter.format(Date(timestamp))
         }
     }
 
-    fun summarizePortionNotes(notes: List<String>): String {
-        val nonEmpty = notes.mapIndexedNotNull { idx, note ->
-            val clean = note.trim()
-            if (clean.isEmpty()) null
-            else if (notes.size == 1) clean
-            else "Porsi ${idx + 1}: $clean"
+    fun generateInvoiceNumber(prefix: String, billingNumber: Int, timestamp: Long = System.currentTimeMillis()): String {
+        val dateStr = synchronized(invoiceDateFormatter) {
+            invoiceDateFormatter.format(Date(timestamp))
         }
-        return nonEmpty.joinToString("; ")
+        val cleanPrefix = prefix.trim().ifEmpty { "BIL" }.uppercase()
+        val seqStr = billingNumber.coerceAtLeast(1).toString().padStart(3, '0')
+        return "$cleanPrefix-$dateStr-$seqStr"
+    }
+
+    fun roundToNearestMultiple(value: Double, multiple: Int): Double {
+        if (multiple <= 1) return value
+        return kotlin.math.round(value / multiple) * multiple
     }
 
     fun getStartOfDay(timestamp: Long = System.currentTimeMillis()): Long {
@@ -128,48 +110,52 @@ object SecurityAndFormatUtils {
         return cal.timeInMillis
     }
 
-    fun getStartOfYesterday(): Long {
+    fun getStartOfMonth(timestamp: Long = System.currentTimeMillis()): Long {
         val cal = Calendar.getInstance()
-        cal.add(Calendar.DAY_OF_YEAR, -1)
-        return getStartOfDay(cal.timeInMillis)
-    }
-
-    fun getEndOfYesterday(): Long {
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.DAY_OF_YEAR, -1)
-        return getEndOfDay(cal.timeInMillis)
-    }
-
-    fun getStartOfDaysAgo(days: Int): Long {
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.DAY_OF_YEAR, -days)
-        return getStartOfDay(cal.timeInMillis)
-    }
-
-    fun getStartOfCurrentWeek(): Long {
-        val cal = Calendar.getInstance()
-        cal.firstDayOfWeek = Calendar.MONDAY
-        cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-        return getStartOfDay(cal.timeInMillis)
-    }
-
-    fun getStartOfCurrentMonth(): Long {
-        val cal = Calendar.getInstance()
+        cal.timeInMillis = timestamp
         cal.set(Calendar.DAY_OF_MONTH, 1)
-        return getStartOfDay(cal.timeInMillis)
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
     }
 
-    fun getStartOfLastMonth(): Long {
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.MONTH, -1)
-        cal.set(Calendar.DAY_OF_MONTH, 1)
-        return getStartOfDay(cal.timeInMillis)
+    // --- PER-PORTION NOTE ENCODING & DECODING ---
+    fun normalizePortionNotes(notes: List<String>, quantity: Int): List<String> {
+        val safeQty = quantity.coerceAtLeast(1)
+        return List(safeQty) { idx ->
+            notes.getOrNull(idx)?.trim().orEmpty()
+        }
     }
 
-    fun getEndOfLastMonth(): Long {
-        val cal = Calendar.getInstance()
-        cal.set(Calendar.DAY_OF_MONTH, 1)
-        cal.add(Calendar.DAY_OF_YEAR, -1)
-        return getEndOfDay(cal.timeInMillis)
+    fun encodePortionNotes(notes: List<String>, quantity: Int): String {
+        val normalized = normalizePortionNotes(notes, quantity)
+        if (normalized.all { it.isBlank() }) return ""
+        return normalized.joinToString(PORTION_NOTE_DELIM) { it.replace(PORTION_NOTE_DELIM, " ") }
+    }
+
+    fun decodePortionNotes(encoded: String, quantity: Int): List<String> {
+        val safeQty = quantity.coerceAtLeast(1)
+        if (encoded.isBlank()) return List(safeQty) { "" }
+        return if (encoded.contains(PORTION_NOTE_DELIM)) {
+            val parts = encoded.split(PORTION_NOTE_DELIM)
+            List(safeQty) { idx -> parts.getOrNull(idx)?.trim().orEmpty() }
+        } else {
+            List(safeQty) { idx -> if (idx == 0) encoded.trim() else "" }
+        }
+    }
+
+    fun formatPortionNotesSummary(portionNotes: List<String>): List<String> {
+        val nonBlankCount = portionNotes.count { it.isNotBlank() }
+        if (nonBlankCount == 0) return emptyList()
+        if (portionNotes.size == 1) {
+            val first = portionNotes.first().trim()
+            return if (first.isNotBlank()) listOf("Catatan: $first") else emptyList()
+        }
+        return portionNotes.mapIndexedNotNull { idx, note ->
+            val clean = note.trim()
+            if (clean.isNotBlank()) "Porsi ${idx + 1}: $clean" else null
+        }
     }
 }

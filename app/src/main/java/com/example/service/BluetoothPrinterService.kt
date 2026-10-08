@@ -84,7 +84,7 @@ object BluetoothPrinterService {
         }.sortedBy { it.name }
     }
 
-    // --- FORMAT TIKET PESANAN DAPUR (TANPA INFO PEMBAYARAN) ---
+    // --- FORMAT TIKET PESANAN DAPUR (TANPA METODE PEMBAYARAN DAN KEMBALIAN) ---
     fun formatKitchenTicketText(
         txWithItems: TransactionWithItems,
         paperSizeMm: Int = 58
@@ -96,9 +96,9 @@ object BluetoothPrinterService {
 
         val sb = StringBuilder()
         sb.appendLine(doubleDivider)
-        sb.appendLine("DAPUR")
+        sb.appendLine("STRUK PESANAN DAPUR")
         sb.appendLine(billingUpper)
-        sb.appendLine(SecurityAndFormatUtils.formatReceiptDateTime(tx.timestamp))
+        sb.appendLine("Waktu: ${SecurityAndFormatUtils.formatReceiptDateTime(tx.timestamp)}")
         if (tx.customerName.isNotBlank() && tx.customerName != "Pelanggan Umum") {
             sb.appendLine("Pelanggan: ${tx.customerName}")
         }
@@ -174,10 +174,10 @@ object BluetoothPrinterService {
         if (tx.status == "CANCELLED") {
             sb.appendLine(center("*** DIBATALKAN ***"))
         } else if (tx.status == "UNPAID") {
-            sb.appendLine(center("*** BELUM LUNAS ***"))
+            sb.appendLine(center("*** BELUM BAYAR ***"))
         }
         sb.appendLine(tx.billingDisplay.uppercase())
-        sb.appendLine(SecurityAndFormatUtils.formatReceiptDateTime(tx.timestamp))
+        sb.appendLine("Waktu: ${SecurityAndFormatUtils.formatReceiptDateTime(tx.timestamp)}")
         if (tx.customerName.isNotBlank() && tx.customerName != "Pelanggan Umum") {
             sb.appendLine("Pelanggan: ${tx.customerName}")
         }
@@ -224,7 +224,9 @@ object BluetoothPrinterService {
         }
         sb.appendLine(leftRight("TOTAL", SecurityAndFormatUtils.formatRupiah(tx.totalAmount)))
         if (tx.status == "PAID" || tx.status == "COMPLETED") {
-            sb.appendLine(leftRight(tx.paymentMethod.uppercase(), SecurityAndFormatUtils.formatRupiah(tx.amountPaid)))
+            val methodUpper = tx.paymentMethod.uppercase()
+            sb.appendLine(leftRight("METODE BAYAR", methodUpper))
+            sb.appendLine(leftRight(methodUpper, SecurityAndFormatUtils.formatRupiah(tx.amountPaid)))
             sb.appendLine(leftRight("KEMBALI", SecurityAndFormatUtils.formatRupiah(tx.changeAmount)))
         } else {
             sb.appendLine(leftRight("STATUS", if (tx.status == "UNPAID") "BELUM BAYAR" else "DIBATALKAN"))
@@ -260,43 +262,33 @@ object BluetoothPrinterService {
 
             val address = (printerAddressOverride ?: settings.defaultPrinterAddress).trim()
             if (address.isEmpty()) {
-                throw IllegalStateException("Belum ada printer Bluetooth default yang dipilih di Pengaturan Printer.")
+                throw IllegalArgumentException("Pilih printer Bluetooth terlebih dahulu di Pengaturan Printer.")
             }
 
-            val device = try {
-                adapter.getRemoteDevice(address)
-            } catch (e: IllegalArgumentException) {
-                throw IllegalStateException("Alamat MAC Printer Bluetooth tidak valid: $address")
-            }
-
-            if (adapter.isDiscovering) {
-                adapter.cancelDiscovery()
-            }
-
-            val safeCopies = copies.coerceIn(1, 5)
+            val device = adapter.getRemoteDevice(address)
             var socket: BluetoothSocket? = null
             try {
+                if (adapter.isDiscovering) {
+                    adapter.cancelDiscovery()
+                }
                 socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
                 socket.connect()
                 val out: OutputStream = socket.outputStream
 
-                val escInit = byteArrayOf(0x1B, 0x40)
-                val escAlignLeft = byteArrayOf(0x1B, 0x61, 0x00)
-                val escFeedAndCut = byteArrayOf(0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00)
+                val initPrinter = byteArrayOf(0x1B, 0x40)
+                val alignLeft = byteArrayOf(0x1B, 0x61, 0x00)
+                val feedAndCut = byteArrayOf(0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x41, 0x10)
+                val textBytes = rawText.toByteArray(Charset.forName("GBK"))
 
-                for (copy in 1..safeCopies) {
-                    out.write(escInit)
-                    out.write(escAlignLeft)
-                    out.write(rawText.toByteArray(Charset.forName("GBK")))
-                    out.write(escFeedAndCut)
+                val totalCopies = copies.coerceIn(1, 5)
+                repeat(totalCopies) {
+                    out.write(initPrinter)
+                    out.write(alignLeft)
+                    out.write(textBytes)
+                    out.write(feedAndCut)
                     out.flush()
                 }
-                Thread.sleep(350)
-                "$successLabel ke ${device.name ?: address}."
-            } catch (e: Exception) {
-                throw IllegalStateException(
-                    "Gagal terhubung ke printer '${device.name ?: address}'. Pastikan printer thermal menyala, kertas tersedia, dan berada dalam jangkauan Bluetooth."
-                )
+                "$successLabel ke ${device.name ?: address}"
             } finally {
                 try {
                     socket?.close()
@@ -306,72 +298,88 @@ object BluetoothPrinterService {
         }
     }
 
-    suspend fun printKitchenTicketToBluetooth(
-        context: Context,
-        txWithItems: TransactionWithItems,
-        settings: StoreSettingsEntity,
-        printerAddressOverride: String? = null
-    ): Result<String> {
-        val kitchenText = formatKitchenTicketText(txWithItems, settings.paperSizeMm)
-        return printTextToBluetooth(
-            context = context,
-            rawText = kitchenText,
-            settings = settings,
-            printerAddressOverride = printerAddressOverride,
-            copies = 1,
-            successLabel = "Tiket dapur ${txWithItems.transaction.billingDisplay} berhasil dicetak"
-        )
-    }
-
+    @SuppressLint("MissingPermission")
     suspend fun printReceiptToBluetooth(
         context: Context,
         txWithItems: TransactionWithItems,
         settings: StoreSettingsEntity,
         printerAddressOverride: String? = null
     ): Result<String> {
-        val formattedText = formatReceiptText(
-            txWithItems = txWithItems,
-            settings = settings,
-            paperSizeMm = settings.paperSizeMm
-        )
+        val text = formatReceiptText(txWithItems, settings, settings.paperSizeMm)
         return printTextToBluetooth(
             context = context,
-            rawText = formattedText,
+            rawText = text,
             settings = settings,
             printerAddressOverride = printerAddressOverride,
             copies = settings.printCopies,
-            successLabel = "Struk ${txWithItems.transaction.billingDisplay} berhasil dicetak"
+            successLabel = "Struk berhasil dicetak"
         )
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun testPrintBluetooth(
+    suspend fun printKitchenTicketToBluetooth(
         context: Context,
+        txWithItems: TransactionWithItems,
         settings: StoreSettingsEntity,
-        printerAddress: String,
-        printerName: String
+        printerAddressOverride: String? = null
     ): Result<String> {
-        val lineWidth = if (settings.paperSizeMm >= 80) 48 else 32
-        val divider = "=".repeat(lineWidth)
-        val testReceipt = buildString {
-            appendLine(divider)
-            appendLine("TES CETAK PRINTER KASIRKU")
-            appendLine(settings.storeName)
-            appendLine("Printer : $printerName")
-            appendLine("MAC     : $printerAddress")
-            appendLine("Kertas  : ${settings.paperSizeMm}mm ($lineWidth karakter)")
-            appendLine("Waktu   : ${SecurityAndFormatUtils.formatReceiptDateTime(System.currentTimeMillis())}")
-            appendLine(divider)
-            appendLine("Printer siap digunakan!")
-            appendLine()
-        }
+        val text = formatKitchenTicketText(txWithItems, settings.paperSizeMm)
         return printTextToBluetooth(
             context = context,
-            rawText = testReceipt,
+            rawText = text,
             settings = settings,
-            printerAddressOverride = printerAddress,
+            printerAddressOverride = printerAddressOverride,
             copies = 1,
-            successLabel = "Tes cetak berhasil"
+            successLabel = "Tiket pesanan dapur berhasil dicetak"
         )
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun printTestPage(
+        context: Context,
+        printerAddress: String,
+        storeName: String,
+        paperSizeMm: Int
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (!hasBluetoothPermissions(context)) {
+                throw SecurityException("Izin Bluetooth belum diberikan.")
+            }
+            val adapter = getBluetoothAdapter(context)
+                ?: throw IllegalStateException("Bluetooth tidak tersedia di perangkat ini.")
+            if (!adapter.isEnabled) {
+                throw IllegalStateException("Bluetooth belum diaktifkan.")
+            }
+
+            val device = adapter.getRemoteDevice(printerAddress)
+            var socket: BluetoothSocket? = null
+            try {
+                if (adapter.isDiscovering) adapter.cancelDiscovery()
+                socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                socket.connect()
+                val out = socket.outputStream
+                val width = if (paperSizeMm >= 80) 48 else 32
+                val line = "=".repeat(width)
+                val testContent = buildString {
+                    appendLine(line)
+                    appendLine("TES PRINTER KASIRKU RESTO")
+                    appendLine(storeName)
+                    appendLine("Ukuran Kertas: ${paperSizeMm}mm")
+                    appendLine("Waktu: ${SecurityAndFormatUtils.formatDateTime(System.currentTimeMillis())}")
+                    appendLine("Status: TERHUBUNG & SIAP CETAK")
+                    appendLine(line)
+                }
+                out.write(byteArrayOf(0x1B, 0x40))
+                out.write(testContent.toByteArray(Charset.forName("UTF-8")))
+                out.write(byteArrayOf(0x0A, 0x0A, 0x0A))
+                out.flush()
+                "Tes cetak berhasil dikirim ke ${device.name ?: printerAddress}"
+            } finally {
+                try {
+                    socket?.close()
+                } catch (_: Exception) {
+                }
+            }
+        }
     }
 }

@@ -4,121 +4,168 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.CartItem
-import com.example.data.CashierUserEntity
 import com.example.data.CategoryEntity
 import com.example.data.KasirDatabase
 import com.example.data.KasirRepository
 import com.example.data.ProductEntity
 import com.example.data.StoreSettingsEntity
+import com.example.data.TransactionEntity
+import com.example.data.TransactionItemEntity
 import com.example.service.BluetoothPrinterService
-import kotlinx.coroutines.test.runTest
+import com.example.util.SecurityAndFormatUtils
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
 class ExampleRobolectricTest {
 
-    @Test
-    fun `verify restaurant order to kitchen and separate billing payment flow`() = runTest {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val appName = context.getString(R.string.app_name)
-        assertEquals("KasirKu", appName)
+    private lateinit var database: KasirDatabase
+    private lateinit var repository: KasirRepository
 
-        val db = Room.inMemoryDatabaseBuilder(context, KasirDatabase::class.java)
+    @Before
+    fun setup() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        database = Room.inMemoryDatabaseBuilder(context, KasirDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        val dao = db.kasirDao()
-        val repo = KasirRepository(dao)
+        repository = KasirRepository(database)
+    }
 
-        dao.saveStoreSettings(StoreSettingsEntity(id = 1, storeName = "Resto KasirKu"))
-        val foodCatId = repo.saveCategory(CategoryEntity(name = "Makanan")).getOrThrow()
-        val drinkCatId = repo.saveCategory(CategoryEntity(name = "Minuman")).getOrThrow()
+    @After
+    fun tearDown() {
+        database.close()
+    }
 
-        val mieGorengId = repo.saveProduct(
+    @Test
+    fun verifySequentialBillingNumbersAndPaymentMethodsAndKitchenReceipt() = runBlocking {
+        repository.ensureInitialData()
+
+        // 1. Verify default payment methods: TUNAI, TRANSFER, QRIS, GOJEK, SHOPEE, GRAB
+        val initialMethods = repository.getAllPaymentMethodsOnce()
+        assertEquals(
+            listOf("TUNAI", "TRANSFER", "QRIS", "GOJEK", "SHOPEE", "GRAB"),
+            initialMethods.map { it.name }
+        )
+
+        val categories = repository.allCategories.first()
+        val makananCat = categories.first()
+
+        val menuId = repository.saveProduct(
             ProductEntity(
-                name = "Mie Goreng",
-                buyPrice = 8000.0,
+                name = "Mie Goreng Spesial",
                 sellPrice = 15000.0,
                 unit = "Porsi",
-                categoryId = foodCatId,
-                categoryName = "Makanan"
+                categoryId = makananCat.id,
+                categoryName = makananCat.name
             )
-        ).getOrThrow()
+        )
+        val menu = repository.allProducts.first().first { it.id == menuId }
 
-        val esTehId = repo.saveProduct(
-            ProductEntity(
-                name = "Es Teh Manis",
-                buyPrice = 2000.0,
-                sellPrice = 5000.0,
-                unit = "Gelas",
-                categoryId = drinkCatId,
-                categoryName = "Minuman"
-            )
-        ).getOrThrow()
+        // 2. Verify initial next billing number for today starts at Billing 1
+        assertEquals(1, repository.getNextBillingNumberForToday())
 
-        val mieGoreng = dao.getProductById(mieGorengId)!!
-        val esTeh = dao.getProductById(esTehId)!!
-
-        // 1. PROSES PESAN: Send Order to Kitchen (Status = UNPAID / BELUM BAYAR)
-        val cashier = CashierUserEntity(id = 1, name = "Kasir Resto")
-        val sentOrder = repo.sendOrderToKitchen(
-            existingTransactionId = null,
+        // Create Billing 1 with 2 portions and per-portion notes
+        val cartItem = CartItem(
+            product = menu,
+            quantity = 2,
+            portionNotes = listOf("tidak pedas, tanpa sayur", "pedas sedang")
+        )
+        val tx1 = TransactionEntity(
+            invoiceNumber = "BIL-TEST-001",
             billingNumber = 1,
-            cartItems = listOf(
-                CartItem(
-                    product = mieGoreng,
-                    quantity = 2,
-                    portionNotes = listOf("tidak pedas, tanpa sayur", "pedas sedang")
-                ),
-                CartItem(
-                    product = esTeh,
-                    quantity = 2,
-                    portionNotes = listOf("es sedikit", "normal")
-                )
-            ),
-            cashier = cashier,
-            customer = null,
-            notes = "Meja 4"
-        ).getOrThrow()
+            subtotal = cartItem.subtotal,
+            totalAmount = cartItem.subtotal,
+            paymentMethod = "BELUM BAYAR",
+            amountPaid = 0.0,
+            changeAmount = 0.0,
+            status = "UNPAID"
+        )
+        val item1 = TransactionItemEntity(
+            transactionId = 0,
+            productId = menu.id,
+            productName = menu.name,
+            unit = menu.unit,
+            sellPrice = menu.sellPrice,
+            quantity = cartItem.quantity,
+            itemNote = cartItem.encodedItemNote,
+            subtotal = cartItem.subtotal
+        )
 
-        assertEquals("UNPAID", sentOrder.transaction.status)
-        assertEquals("Billing 1", sentOrder.transaction.billingDisplay)
-        assertEquals(40000.0, sentOrder.transaction.totalAmount, 0.01)
+        val sentOrder1 = repository.createKitchenOrderBilling(tx1, listOf(item1))
+        assertEquals("UNPAID", sentOrder1.transaction.status)
+        assertEquals(1, sentOrder1.transaction.billingNumber)
+        assertEquals("Billing 1", sentOrder1.transaction.billingDisplay)
 
-        // Verify kitchen ticket contains per-portion notes
-        val kitchenTicket = BluetoothPrinterService.formatKitchenTicketText(sentOrder, 58)
+        // Verify kitchen ticket contains Billing 1, menu, and per-portion notes, without payment/change
+        val kitchenTicket = BluetoothPrinterService.formatKitchenTicketText(sentOrder1, 58)
         assertTrue(kitchenTicket.contains("BILLING 1"))
+        assertTrue(kitchenTicket.contains("Mie Goreng Spesial x2"))
         assertTrue(kitchenTicket.contains("Porsi 1: tidak pedas, tanpa sayur"))
         assertTrue(kitchenTicket.contains("Porsi 2: pedas sedang"))
+        assertFalse(kitchenTicket.contains("KEMBALI"))
 
-        // 2. PROSES BAYAR: Complete payment for Billing 1 with Rp50.000 cash
-        val paidOrder = repo.processBillingPayment(
-            transactionId = sentOrder.transaction.id,
-            cashier = cashier,
-            discountAmount = 0.0,
-            serviceFee = 0.0,
-            paymentMethod = "Tunai",
-            amountPaid = 50000.0
-        ).getOrThrow()
-
-        assertEquals("PAID", paidOrder.transaction.status)
-        assertEquals(40000.0, paidOrder.transaction.totalAmount, 0.01)
-        assertEquals(10000.0, paidOrder.transaction.changeAmount, 0.01)
-
-        // Verify receipt formatting contains key information
-        val receipt = BluetoothPrinterService.formatReceiptText(
-            txWithItems = paidOrder,
-            settings = StoreSettingsEntity(storeName = "Resto KasirKu", paperSizeMm = 58)
+        // 3. Pay Billing 1 using QRIS
+        val qrisMethod = initialMethods.first { it.name == "QRIS" }
+        val paidOrder1 = repository.completeBillingPayment(
+            sentOrder1.transaction.copy(
+                paymentMethodId = qrisMethod.id,
+                paymentMethod = qrisMethod.name,
+                amountPaid = 30000.0,
+                changeAmount = 0.0,
+                status = "PAID"
+            )
         )
-        assertTrue(receipt.contains("RESTO KASIRKU"))
-        assertTrue(receipt.contains("Mie Goreng"))
-        assertTrue(receipt.contains("KEMBALI"))
+        assertEquals("PAID", paidOrder1.transaction.status)
 
-        db.close()
+        // 4. CRITICAL: Even though Billing 1 is now PAID (and unpaidBillings is empty),
+        // the next billing number on the same day MUST be Billing 2 (NEVER reset to Billing 1!)
+        assertEquals(0, repository.unpaidTransactionsWithItems.first().size)
+        assertEquals(2, repository.getNextBillingNumberForToday())
+
+        // Even if caller passes billingNumber = 1 by mistake, createKitchenOrderBilling enforces Billing 2!
+        val sentOrder2 = repository.createKitchenOrderBilling(
+            tx1.copy(billingNumber = 1),
+            listOf(item1)
+        )
+        assertEquals(2, sentOrder2.transaction.billingNumber)
+        assertEquals("Billing 2", sentOrder2.transaction.billingDisplay)
+        assertEquals(3, repository.getNextBillingNumberForToday())
+
+        // 5. Rename QRIS -> QRIS BCA, add DANA, delete GRAB, and verify old transaction (Billing 1) still has "QRIS" intact
+        repository.updatePaymentMethod(qrisMethod, "QRIS BCA", false)
+        repository.addPaymentMethod("DANA", false)
+        val grabMethod = initialMethods.first { it.name == "GRAB" }
+        repository.deletePaymentMethod(grabMethod)
+
+        val updatedMethods = repository.getAllPaymentMethodsOnce().map { it.name }
+        assertTrue(updatedMethods.contains("QRIS BCA"))
+        assertTrue(updatedMethods.contains("DANA"))
+        assertFalse(updatedMethods.contains("GRAB"))
+
+        val allHistory = repository.allTransactionsWithItems.first()
+        val historicalTx1 = allHistory.first { it.transaction.id == paidOrder1.transaction.id }
+        assertEquals("QRIS", historicalTx1.transaction.paymentMethod)
+
+        // 6. Pay Billing 2 with TUNAI and verify payment receipt
+        val paidOrder2 = repository.completeBillingPayment(
+            sentOrder2.transaction.copy(
+                paymentMethod = "TUNAI",
+                amountPaid = 50000.0,
+                changeAmount = 20000.0,
+                status = "PAID"
+            )
+        )
+        val receipt = BluetoothPrinterService.formatReceiptText(paidOrder2, StoreSettingsEntity())
+        assertTrue(receipt.contains("BILLING 2"))
+        assertTrue(receipt.contains("TUNAI"))
+        assertTrue(receipt.contains("KEMBALI"))
     }
 }

@@ -186,7 +186,7 @@ fun HistoryScreen(
                     val tx = tw.transaction
                     val isCancelled = tx.status == "CANCELLED"
                     val isUnpaid = tx.status == "UNPAID"
-                    val canVoid = activeCashier?.canVoidTransaction ?: true
+                    val canVoid = activeCashier?.canCancelTransaction ?: true
 
                     Card(
                         modifier = Modifier
@@ -211,7 +211,7 @@ fun HistoryScreen(
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                     Text(
-                                        text = "${SecurityAndFormatUtils.formatDate(tx.timestamp)} • ${SecurityAndFormatUtils.formatTime(tx.timestamp)} • Kasir: ${tx.cashierName}",
+                                        text = "${SecurityAndFormatUtils.formatDateTime(tx.timestamp)} • Kasir: ${tx.cashierName}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

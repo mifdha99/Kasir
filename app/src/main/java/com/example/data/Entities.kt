@@ -2,39 +2,33 @@ package com.example.data
 
 import androidx.room.Embedded
 import androidx.room.Entity
-import androidx.room.ForeignKey
-import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Relation
 import com.example.util.SecurityAndFormatUtils
 
-@Entity(
-    tableName = "categories",
-    indices = [Index(value = ["name"], unique = false)]
-)
+@Entity(tableName = "categories")
 data class CategoryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val iconName: String = "Restaurant",
+    val description: String = "",
     val colorHex: String = "#0F766E",
+    val iconName: String = "Category",
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "products",
-    indices = [
-        Index(value = ["categoryId"]),
-        Index(value = ["name"])
-    ]
-)
+@Entity(tableName = "products")
 data class ProductEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val buyPrice: Double = 0.0,
-    val sellPrice: Double = 0.0,
+    val sku: String = "",
+    val barcode: String = "",
+    val costPrice: Double = 0.0,
+    val sellPrice: Double,
+    val stock: Int = 0,
+    val minStock: Int = 0,
     val unit: String = "Porsi",
-    val categoryId: Long = 0,
-    val categoryName: String = "Makanan",
+    val categoryId: Long,
+    val categoryName: String,
     val description: String = "",
     val imageUri: String = "",
     val isActive: Boolean = true,
@@ -42,102 +36,84 @@ data class ProductEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "customers",
-    indices = [Index(value = ["name"]), Index(value = ["phone"])]
-)
+@Entity(tableName = "payment_methods")
+data class PaymentMethodEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val isCashType: Boolean = false,
+    val sortOrder: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    val requiresCashInput: Boolean
+        get() = isCashType ||
+            name.trim().equals("TUNAI", ignoreCase = true) ||
+            name.trim().equals("CASH", ignoreCase = true)
+}
+
+@Entity(tableName = "customers")
 data class CustomerEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val phone: String = "",
+    val phone: String,
     val address: String = "",
     val notes: String = "",
-    val totalTransactions: Int = 0,
-    val totalPurchase: Double = 0.0,
+    val totalDebt: Double = 0.0,
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "users")
-data class CashierUserEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val name: String,
-    val pinHash: String = SecurityAndFormatUtils.hashPin("1234"),
-    val role: String = "ADMIN", // "ADMIN" or "KASIR"
-    val canGiveDiscount: Boolean = true,
-    val canVoidTransaction: Boolean = true,
-    val canViewReports: Boolean = true,
-    val canManageSettings: Boolean = true,
-    val isActive: Boolean = true,
-    val createdAt: Long = System.currentTimeMillis()
-)
-
-@Entity(
-    tableName = "transactions",
-    indices = [
-        Index(value = ["billingNumber"]),
-        Index(value = ["timestamp"]),
-        Index(value = ["customerId"]),
-        Index(value = ["status"])
-    ]
-)
+@Entity(tableName = "transactions")
 data class TransactionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val invoiceNumber: String,
     val billingNumber: Int = 1,
-    val invoiceNumber: String = "Billing 1",
+    val billingDate: String = "", // yyyy-MM-dd of when the billing was created
     val timestamp: Long = System.currentTimeMillis(),
     val cashierId: Long = 1,
-    val cashierName: String = "Admin Kasir",
+    val cashierName: String = "Admin",
     val customerId: Long? = null,
     val customerName: String = "Pelanggan Umum",
-    val subtotal: Double = 0.0,
+    val subtotal: Double,
     val discountAmount: Double = 0.0,
+    val discountType: String = "NOMINAL", // NOMINAL or PERCENT
+    val discountInput: Double = 0.0,
     val taxPercentage: Double = 0.0,
     val taxAmount: Double = 0.0,
     val serviceFee: Double = 0.0,
     val roundingAmount: Double = 0.0,
-    val totalAmount: Double = 0.0,
-    val totalCost: Double = 0.0,
-    val paymentMethod: String = "Tunai", // Tunai, QRIS, Transfer, Debit, Kredit, Lainnya
-    val amountPaid: Double = 0.0,
-    val changeAmount: Double = 0.0,
+    val totalAmount: Double,
+    val paymentMethodId: Long? = null,
+    val paymentMethod: String, // Snapshot name at transaction time: TUNAI, QRIS, TRANSFER, etc.
+    val amountPaid: Double,
+    val changeAmount: Double,
     val notes: String = "",
-    val isSentToKitchen: Boolean = true,
-    val status: String = "UNPAID", // "UNPAID" (BELUM BAYAR), "PAID" (LUNAS), "CANCELLED" (DIBATALKAN)
+    val status: String = "UNPAID", // UNPAID, PAID, COMPLETED (legacy paid), CANCELLED
     val cancelReason: String = "",
-    val cancelledAt: Long? = null
+    val isDebt: Boolean = false,
+    val debtPaidAmount: Double = 0.0
 ) {
+    val isPaidStatus: Boolean
+        get() = status == "PAID" || status == "COMPLETED"
+
     val billingDisplay: String
         get() = if (billingNumber > 0) "Billing $billingNumber" else invoiceNumber
 }
 
-@Entity(
-    tableName = "transaction_items",
-    foreignKeys = [
-        ForeignKey(
-            entity = TransactionEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["transactionId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index(value = ["transactionId"]), Index(value = ["productId"])]
-)
+@Entity(tableName = "transaction_items")
 data class TransactionItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val transactionId: Long = 0,
+    val transactionId: Long,
     val productId: Long,
     val productName: String,
-    val categoryName: String = "Makanan",
-    val buyPrice: Double = 0.0,
-    val sellPrice: Double = 0.0,
-    val quantity: Int = 1,
+    val sku: String = "",
     val unit: String = "Porsi",
+    val costPrice: Double = 0.0,
+    val sellPrice: Double,
+    val quantity: Int,
     val itemNote: String = "",
-    val portionNotesJson: String = "[]",
-    val subtotal: Double = 0.0
+    val subtotal: Double
 ) {
     val portionNotes: List<String>
-        get() = SecurityAndFormatUtils.decodePortionNotes(portionNotesJson, itemNote, quantity)
+        get() = SecurityAndFormatUtils.decodePortionNotes(itemNote, quantity)
 }
 
 data class TransactionWithItems(
@@ -149,63 +125,98 @@ data class TransactionWithItems(
     val items: List<TransactionItemEntity>
 )
 
-@Entity(tableName = "settings")
-data class StoreSettingsEntity(
-    @PrimaryKey val id: Int = 1,
-    val storeName: String = "Resto & Warung KasirKu",
-    val storeLogoUri: String = "",
-    val storeAddress: String = "Jl. Merdeka Raya No. 88",
-    val storePhone: String = "0812-3456-7890",
-    val storeEmail: String = "halo@kasirku.id",
-    val storeNpwp: String = "",
-    val receiptFooter: String = "TERIMA KASIH\nSelamat Menikmati Hidangan Kami",
-    // Transaction settings
-    val enableDiscount: Boolean = true,
-    val enableTax: Boolean = false,
-    val defaultTaxPercent: Double = 10.0,
-    val defaultServiceFee: Double = 0.0,
-    val enableRounding: Boolean = false,
-    // Printer settings
-    val defaultPrinterName: String = "",
-    val defaultPrinterAddress: String = "",
-    val paperSizeMm: Int = 58, // 58 or 80
-    val printCopies: Int = 1,
-    val autoPrintReceipt: Boolean = false,
-    val autoPrintKitchenTicket: Boolean = false,
-    // Appearance settings
-    val themeMode: String = "LIGHT", // "LIGHT", "DARK", "SYSTEM"
-    val textScale: Float = 1.0f, // 0.9f, 1.0f, 1.15f
-    val productViewMode: String = "GRID", // "GRID" or "LIST"
-    val gridColumns: Int = 2, // 2 or 3
-    // Security settings
-    val requirePinOnStartup: Boolean = false,
-    val protectAdminSettings: Boolean = true,
-    val adminPinHash: String = SecurityAndFormatUtils.hashPin("1234")
+@Entity(tableName = "stock_mutations")
+data class StockMutationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val productId: Long,
+    val productName: String,
+    val type: String,
+    val quantityChange: Int,
+    val previousStock: Int,
+    val newStock: Int,
+    val reason: String,
+    val referenceInvoice: String = "",
+    val timestamp: Long = System.currentTimeMillis(),
+    val cashierName: String = "Admin"
 )
 
-@Entity(tableName = "printers")
-data class PrinterDeviceEntity(
-    @PrimaryKey val address: String,
+@Entity(tableName = "debt_payments")
+data class DebtPaymentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val customerId: Long,
+    val customerName: String,
+    val transactionId: Long? = null,
+    val amount: Double,
+    val paymentMethod: String = "TUNAI",
+    val notes: String = "",
+    val timestamp: Long = System.currentTimeMillis(),
+    val cashierName: String = "Admin"
+)
+
+@Entity(tableName = "cashier_users")
+data class CashierUserEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val paperSizeMm: Int = 58,
-    val isDefault: Boolean = false,
-    val lastConnectedAt: Long = System.currentTimeMillis()
+    val role: String, // ADMIN or KASIR
+    val pinHash: String,
+    val isActive: Boolean = true,
+    val canEditPrice: Boolean = true,
+    val canGiveDiscount: Boolean = true,
+    val canCancelTransaction: Boolean = true,
+    val canViewReports: Boolean = true,
+    val canManageStock: Boolean = true
+)
+
+@Entity(tableName = "store_settings")
+data class StoreSettingsEntity(
+    @PrimaryKey val id: Int = 1,
+    val storeName: String = "KasirKu Warung & Resto",
+    val storeAddress: String = "Jl. Merdeka No. 10, Indonesia",
+    val storePhone: String = "0812-3456-7890",
+    val storeEmail: String = "",
+    val storeLogoUri: String = "",
+    val receiptHeader: String = "Selamat Datang",
+    val receiptFooter: String = "Terima Kasih Atas Kunjungan Anda",
+    val currencySymbol: String = "Rp",
+    val defaultTaxPercentage: Double = 0.0,
+    val defaultServiceFee: Double = 0.0,
+    val enableTaxByDefault: Boolean = false,
+    val enableRounding: Boolean = false,
+    val roundingMultiple: Int = 100,
+    val autoPrintReceipt: Boolean = false,
+    val autoPrintKitchenTicket: Boolean = false,
+    val printCopies: Int = 1,
+    val paperSizeMm: Int = 58, // 58 or 80
+    val defaultPrinterName: String = "",
+    val defaultPrinterAddress: String = "",
+    val enableCash: Boolean = true,
+    val enableQris: Boolean = true,
+    val enableTransfer: Boolean = true,
+    val enableDebit: Boolean = true,
+    val enableCredit: Boolean = true,
+    val enableOtherPayment: Boolean = true,
+    val allowNegativeStock: Boolean = true,
+    val showLowStockAlert: Boolean = false,
+    val requirePinOnStartup: Boolean = false,
+    val isDarkMode: Boolean = false,
+    val productViewMode: String = "GRID", // GRID or LIST
+    val gridColumns: Int = 2,
+    val invoicePrefix: String = "BIL",
+    val lastBillingDate: String = "",
+    val lastBillingSequence: Int = 0
 )
 
 data class CartItem(
     val product: ProductEntity,
-    val quantity: Int = 1,
-    val portionNotes: List<String> = List(quantity.coerceAtLeast(1)) { "" }
+    val quantity: Int,
+    val portionNotes: List<String> = emptyList()
 ) {
-    val normalizedPortionNotes: List<String>
-        get() = SecurityAndFormatUtils.normalizePortionNotes(portionNotes, quantity)
-
-    val noteSummary: String
-        get() = SecurityAndFormatUtils.summarizePortionNotes(normalizedPortionNotes)
-
     val subtotal: Double
         get() = product.sellPrice * quantity
 
-    val totalCost: Double
-        get() = product.buyPrice * quantity
+    val normalizedPortionNotes: List<String>
+        get() = SecurityAndFormatUtils.normalizePortionNotes(portionNotes, quantity)
+
+    val encodedItemNote: String
+        get() = SecurityAndFormatUtils.encodePortionNotes(normalizedPortionNotes, quantity)
 }

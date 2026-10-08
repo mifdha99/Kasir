@@ -5,46 +5,68 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.RestaurantMenu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.data.TransactionWithItems
+import com.example.data.KasirDatabase
+import com.example.data.KasirRepository
 import com.example.ui.components.KitchenTicketDialog
 import com.example.ui.components.PinLockDialog
 import com.example.ui.components.ReceiptPreviewAndActionDialog
@@ -60,233 +82,273 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.KasirKuTheme
 import com.example.viewmodel.AppScreen
 import com.example.viewmodel.KasirViewModel
+import com.example.viewmodel.KasirViewModelFactory
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            val kasirViewModel: KasirViewModel = viewModel()
-            val settings by kasirViewModel.settings.collectAsStateWithLifecycle()
 
-            KasirKuTheme(
-                themeMode = settings.themeMode,
-                textScale = settings.textScale
-            ) {
-                KasirKuApp(viewModel = kasirViewModel)
+        val database = KasirDatabase.getInstance(applicationContext)
+        val repository = KasirRepository(database)
+        val factory = KasirViewModelFactory(application, repository)
+
+        setContent {
+            val viewModel: KasirViewModel = viewModel(factory = factory)
+            val settings by viewModel.storeSettings.collectAsStateWithLifecycle()
+
+            KasirKuTheme(themeMode = if (settings.isDarkMode) "DARK" else "LIGHT") {
+                KasirKuMainApp(viewModel = viewModel)
             }
         }
     }
 }
 
+private data class DrawerNavDestination(
+    val screen: AppScreen,
+    val label: String,
+    val icon: ImageVector,
+    val tag: String
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KasirKuApp(viewModel: KasirViewModel) {
+fun KasirKuMainApp(viewModel: KasirViewModel) {
     val context = LocalContext.current
-    val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
-    val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val categories by viewModel.categories.collectAsStateWithLifecycle()
-    val products by viewModel.products.collectAsStateWithLifecycle()
-    val customers by viewModel.customers.collectAsStateWithLifecycle()
-    val users by viewModel.users.collectAsStateWithLifecycle()
-    val transactions by viewModel.transactionsWithItems.collectAsStateWithLifecycle()
-    val unpaidBillings by viewModel.unpaidBillings.collectAsStateWithLifecycle()
-    val activeCashier by viewModel.activeCashier.collectAsStateWithLifecycle()
-    val isAppLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
-    val isAdminUnlocked by viewModel.isAdminUnlocked.collectAsStateWithLifecycle()
-    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
-
-    // Proses Pesan (Active Order Billing) states
-    val activeBillingNumber by viewModel.activeBillingNumber.collectAsStateWithLifecycle()
-    val editingTransactionId by viewModel.editingTransactionId.collectAsStateWithLifecycle()
-    val cartItems by viewModel.cartItems.collectAsStateWithLifecycle()
-    val lastSentKitchenOrder by viewModel.lastSentKitchenOrder.collectAsStateWithLifecycle()
-
-    // Proses Bayar (Payment of Unpaid Billing) states
-    val selectedBillingForPayment by viewModel.selectedBillingForPayment.collectAsStateWithLifecycle()
-    val discountInput by viewModel.discountInput.collectAsStateWithLifecycle()
-    val serviceFeeInput by viewModel.serviceFeeInput.collectAsStateWithLifecycle()
-    val paymentMethod by viewModel.paymentMethod.collectAsStateWithLifecycle()
-    val amountPaidInput by viewModel.amountPaidInput.collectAsStateWithLifecycle()
-    val lastCompletedTx by viewModel.lastCompletedTransaction.collectAsStateWithLifecycle()
-
-    var inspectedTransaction by remember { mutableStateOf<TransactionWithItems?>(null) }
-    var inspectedKitchenOrder by remember { mutableStateOf<TransactionWithItems?>(null) }
-    var startupLockChecked by remember { mutableStateOf(false) }
-
+    val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(settings.requirePinOnStartup) {
-        if (!startupLockChecked && settings.requirePinOnStartup) {
-            viewModel.lockApp()
-            startupLockChecked = true
-        }
-    }
+    val currentScreen by viewModel.currentScreen.collectAsStateWithLifecycle()
+    val settings by viewModel.storeSettings.collectAsStateWithLifecycle()
+    val categories by viewModel.categories.collectAsStateWithLifecycle()
+    val paymentMethods by viewModel.paymentMethods.collectAsStateWithLifecycle()
+    val products by viewModel.products.collectAsStateWithLifecycle()
+    val customers by viewModel.customers.collectAsStateWithLifecycle()
+    val allTransactions by viewModel.allTransactions.collectAsStateWithLifecycle()
+    val unpaidBillings by viewModel.unpaidBillings.collectAsStateWithLifecycle()
+    val cashierUsers by viewModel.cashierUsers.collectAsStateWithLifecycle()
+    val activeCashier by viewModel.activeCashier.collectAsStateWithLifecycle()
+    val isAppLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
 
-    LaunchedEffect(statusMessage) {
-        statusMessage?.let { msg ->
+    // Ordering (PROSES PESAN) states
+    val cartItems by viewModel.cartItems.collectAsStateWithLifecycle()
+    val activeBillingNumber by viewModel.activeBillingNumber.collectAsStateWithLifecycle()
+    val editingTransactionId by viewModel.editingTransactionId.collectAsStateWithLifecycle()
+    val lastSentKitchenOrder by viewModel.lastSentKitchenOrder.collectAsStateWithLifecycle()
+
+    // Payment (PROSES BAYAR) states
+    val selectedBillingForPayment by viewModel.selectedBillingForPayment.collectAsStateWithLifecycle()
+    val lastCompletedTransaction by viewModel.lastCompletedTransaction.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.uiMessage.collect { msg ->
             snackbarHostState.showSnackbar(msg)
-            viewModel.clearMessage()
         }
     }
 
-    // Handle system Back button on sub-screens
-    BackHandler(enabled = currentScreen != AppScreen.DASHBOARD) {
-        if (currentScreen == AppScreen.PAYMENT && selectedBillingForPayment != null) {
+    BackHandler(enabled = drawerState.isOpen || selectedBillingForPayment != null || currentScreen != AppScreen.DASHBOARD) {
+        if (drawerState.isOpen) {
+            scope.launch { drawerState.close() }
+        } else if (currentScreen == AppScreen.PAYMENT && selectedBillingForPayment != null) {
             viewModel.selectBillingForPayment(null)
         } else {
-            viewModel.navigateTo(AppScreen.DASHBOARD)
+            viewModel.navigateBack()
         }
     }
 
     if (isAppLocked) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-            contentAlignment = Alignment.Center
-        ) {
-            PinLockDialog(
-                title = "KasirKu Terkunci",
-                subtitle = "Masukkan PIN Kasir atau PIN Admin (Default: 1234)",
-                canDismiss = false,
-                onVerifyPin = { pin -> viewModel.unlockAppWithPin(pin) }
-            )
-        }
+        PinLockDialog(
+            title = "Kunci Keamanan ${settings.storeName}",
+            subtitle = "Masukkan PIN Kasir / Admin (Default Admin: 1234)",
+            canDismiss = false,
+            onVerifyPin = { pin -> viewModel.unlockAppWithPin(pin) }
+        )
         return
     }
 
-    // Show Kitchen Ticket Dialog when an order is sent to kitchen or inspected
-    val activeKitchenTx = lastSentKitchenOrder ?: inspectedKitchenOrder
-    if (activeKitchenTx != null) {
+    // Kitchen Ticket Dialog (Shown after "KIRIM PESANAN")
+    if (lastSentKitchenOrder != null) {
+        val kitchenOrder = lastSentKitchenOrder!!
         KitchenTicketDialog(
-            txWithItems = activeKitchenTx,
+            txWithItems = kitchenOrder,
             settings = settings,
-            onDismiss = {
-                viewModel.dismissLastSentKitchenOrder()
-                inspectedKitchenOrder = null
-            },
-            onPrintKitchenBluetooth = { overrideAddr ->
-                viewModel.printKitchenTicketBluetooth(context, activeKitchenTx, overrideAddr)
+            onDismiss = { viewModel.dismissKitchenOrderModal() },
+            onPrintKitchenBluetooth = { addr ->
+                viewModel.printKitchenTicketViaBluetooth(context, kitchenOrder, addr)
             },
             onShareKitchenText = {
-                viewModel.shareKitchenTicketText(context, activeKitchenTx)
+                viewModel.shareKitchenTicketAsText(context, kitchenOrder)
             },
-            onSelectDefaultPrinter = { name, addr, paper ->
-                viewModel.selectDefaultPrinter(name, addr, paper)
+            onSelectDefaultPrinter = { name, address, paperSize ->
+                viewModel.updateStoreSettings(
+                    settings.copy(
+                        defaultPrinterName = name,
+                        defaultPrinterAddress = address,
+                        paperSizeMm = paperSize
+                    )
+                )
             }
         )
     }
 
-    // Show Receipt Dialog after payment or when viewing paid transaction detail
-    val activeReceiptTx = lastCompletedTx ?: inspectedTransaction
-    if (activeReceiptTx != null) {
+    // Payment Receipt Dialog (Shown after "BAYAR & SELESAIKAN" or from History)
+    if (lastCompletedTransaction != null) {
+        val tx = lastCompletedTransaction!!
         ReceiptPreviewAndActionDialog(
-            txWithItems = activeReceiptTx,
+            txWithItems = tx,
             settings = settings,
-            isNewCheckout = (lastCompletedTx != null),
-            onDismiss = {
-                viewModel.dismissLastCompletedTransaction()
-                inspectedTransaction = null
-            },
-            onPrintBluetooth = { overrideAddr ->
-                viewModel.printReceiptBluetooth(context, activeReceiptTx, overrideAddr)
+            isNewCheckout = currentScreen == AppScreen.PAYMENT,
+            onDismiss = { viewModel.dismissCompletedTransactionModal() },
+            onPrintBluetooth = { addr ->
+                viewModel.printReceiptViaBluetooth(context, tx, addr)
             },
             onShareText = {
-                viewModel.shareReceiptText(context, activeReceiptTx)
+                viewModel.shareReceiptAsText(context, tx)
             },
             onSharePdf = {
-                viewModel.shareOrSaveReceiptPdf(context, activeReceiptTx)
+                viewModel.shareReceiptAsPdf(context, tx)
             },
             onSavePdfToUri = { uri ->
-                viewModel.saveReceiptPdfToUri(context, activeReceiptTx, uri)
+                viewModel.saveReceiptPdfToUri(context, uri, tx)
             },
-            onSelectDefaultPrinter = { name, addr, paper ->
-                viewModel.selectDefaultPrinter(name, addr, paper)
+            onSelectDefaultPrinter = { name, address, paperSize ->
+                viewModel.updateStoreSettings(
+                    settings.copy(
+                        defaultPrinterName = name,
+                        defaultPrinterAddress = address,
+                        paperSizeMm = paperSize
+                    )
+                )
             }
         )
     }
 
-    val paymentCalculation = remember(
-        selectedBillingForPayment,
-        discountInput,
-        serviceFeeInput,
-        paymentMethod,
-        amountPaidInput,
-        settings
-    ) {
-        viewModel.calculateBillingPaymentTotals(selectedBillingForPayment)
-    }
-
-    val bottomNavItems = remember {
+    val allDrawerDestinations = remember {
         listOf(
-            Triple(AppScreen.DASHBOARD, "Beranda", Icons.Default.Home),
-            Triple(AppScreen.POS, "Pesan", Icons.Default.Restaurant),
-            Triple(AppScreen.PAYMENT, "Bayar", Icons.Default.Payments),
-            Triple(AppScreen.PRODUCTS, "Menu", Icons.Default.RestaurantMenu),
-            Triple(AppScreen.HISTORY, "Riwayat", Icons.Default.History)
+            DrawerNavDestination(AppScreen.DASHBOARD, "Beranda Utama", Icons.Default.Home, "drawer_dashboard"),
+            DrawerNavDestination(AppScreen.POS, "Pesan Menu (Dapur)", Icons.Default.RestaurantMenu, "drawer_pos"),
+            DrawerNavDestination(AppScreen.PAYMENT, "Pembayaran Billing", Icons.Default.Payments, "drawer_payment"),
+            DrawerNavDestination(AppScreen.PRODUCTS, "Edit Menu dan Harga", Icons.Default.Restaurant, "drawer_products"),
+            DrawerNavDestination(AppScreen.CATEGORIES, "Kategori Menu", Icons.Default.Category, "drawer_categories"),
+            DrawerNavDestination(AppScreen.HISTORY, "Riwayat Transaksi", Icons.Default.History, "drawer_history"),
+            DrawerNavDestination(AppScreen.REPORTS, "Laporan Penjualan (Rekap)", Icons.Default.Assessment, "drawer_reports"),
+            DrawerNavDestination(AppScreen.CUSTOMERS, "Pelanggan", Icons.Default.People, "drawer_customers"),
+            DrawerNavDestination(AppScreen.SETTINGS, "Pengaturan", Icons.Default.Settings, "drawer_settings")
         )
     }
 
-    Scaffold(
-        topBar = {
-            if (currentScreen != AppScreen.DASHBOARD) {
+    val bottomDestinations = remember {
+        listOf(
+            DrawerNavDestination(AppScreen.DASHBOARD, "Beranda", Icons.Default.Home, "bottom_dashboard"),
+            DrawerNavDestination(AppScreen.POS, "Pesan", Icons.Default.RestaurantMenu, "bottom_pos"),
+            DrawerNavDestination(AppScreen.PAYMENT, "Bayar", Icons.Default.Payments, "bottom_payment"),
+            DrawerNavDestination(AppScreen.PRODUCTS, "Edit Menu", Icons.Default.Restaurant, "bottom_products"),
+            DrawerNavDestination(AppScreen.REPORTS, "Rekap", Icons.Default.Assessment, "bottom_reports")
+        )
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(modifier = Modifier.width(300.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = settings.storeName,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Kasir: ${activeCashier?.name ?: "Admin"} (${activeCashier?.role ?: "ADMIN"})",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    allDrawerDestinations.forEach { dest ->
+                        NavigationDrawerItem(
+                            label = {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = dest.label,
+                                        fontWeight = if (currentScreen == dest.screen) FontWeight.Bold else FontWeight.Medium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (dest.screen == AppScreen.PAYMENT && unpaidBillings.isNotEmpty()) {
+                                        Badge {
+                                            Text("${unpaidBillings.size}")
+                                        }
+                                    }
+                                }
+                            },
+                            icon = { Icon(dest.icon, contentDescription = dest.label) },
+                            selected = currentScreen == dest.screen,
+                            onClick = {
+                                viewModel.navigateTo(dest.screen)
+                                scope.launch { drawerState.close() }
+                            },
+                            modifier = Modifier
+                                .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                .testTag(dest.tag)
+                        )
+                    }
+                }
+            }
+        }
+    ) {
+        Scaffold(
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+            topBar = {
                 TopAppBar(
                     title = {
                         Text(
-                            text = currentScreen.title,
-                            fontWeight = FontWeight.ExtraBold
+                            text = if (currentScreen == AppScreen.DASHBOARD) settings.storeName else currentScreen.title,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     navigationIcon = {
-                        IconButton(
-                            onClick = {
-                                if (currentScreen == AppScreen.PAYMENT && selectedBillingForPayment != null) {
-                                    viewModel.selectBillingForPayment(null)
-                                } else {
-                                    viewModel.navigateTo(AppScreen.DASHBOARD)
-                                }
-                            },
-                            modifier = Modifier.testTag("btn_back_to_dashboard")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Kembali"
-                            )
+                        if (currentScreen == AppScreen.DASHBOARD) {
+                            IconButton(
+                                onClick = { scope.launch { drawerState.open() } },
+                                modifier = Modifier.testTag("btn_open_drawer")
+                            ) {
+                                Icon(Icons.Default.Menu, contentDescription = "Buka Menu Navigasi")
+                            }
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    if (currentScreen == AppScreen.PAYMENT && selectedBillingForPayment != null) {
+                                        viewModel.selectBillingForPayment(null)
+                                    } else {
+                                        viewModel.navigateBack()
+                                    }
+                                },
+                                modifier = Modifier.testTag("btn_back")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
+                            }
                         }
                     },
                     actions = {
-                        if (currentScreen != AppScreen.POS) {
-                            IconButton(onClick = { viewModel.navigateTo(AppScreen.POS) }) {
-                                Icon(
-                                    imageVector = Icons.Default.Restaurant,
-                                    contentDescription = "Pesan Menu"
-                                )
-                            }
-                        }
-                        if (currentScreen != AppScreen.PAYMENT) {
-                            IconButton(onClick = { viewModel.navigateTo(AppScreen.PAYMENT) }) {
-                                BadgedBox(
-                                    badge = {
-                                        if (unpaidBillings.isNotEmpty()) {
-                                            Badge { Text("${unpaidBillings.size}") }
-                                        }
-                                    }
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Payments,
-                                        contentDescription = "Pembayaran Billing"
-                                    )
-                                }
-                            }
-                        }
-                        if (currentScreen != AppScreen.SETTINGS) {
-                            IconButton(onClick = { viewModel.navigateTo(AppScreen.SETTINGS) }) {
-                                Icon(
-                                    imageVector = Icons.Default.Settings,
-                                    contentDescription = "Pengaturan"
-                                )
-                            }
+                        IconButton(
+                            onClick = { scope.launch { drawerState.open() } },
+                            modifier = Modifier.testTag("btn_top_drawer")
+                        ) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu Lainnya")
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -294,64 +356,73 @@ fun KasirKuApp(viewModel: KasirViewModel) {
                         titleContentColor = MaterialTheme.colorScheme.onSurface
                     )
                 )
-            }
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface
-            ) {
-                bottomNavItems.forEach { (screen, label, icon) ->
-                    NavigationBarItem(
-                        selected = currentScreen == screen,
-                        onClick = { viewModel.navigateTo(screen) },
-                        icon = {
-                            if (screen == AppScreen.PAYMENT && unpaidBillings.isNotEmpty()) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge { Text("${unpaidBillings.size}") }
+            },
+            bottomBar = {
+                NavigationBar {
+                    bottomDestinations.forEach { item ->
+                        val selected = currentScreen == item.screen
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = { viewModel.navigateTo(item.screen) },
+                            icon = {
+                                if (item.screen == AppScreen.POS && cartItems.isNotEmpty()) {
+                                    BadgedBox(
+                                        badge = {
+                                            Badge {
+                                                Text("${cartItems.sumOf { it.quantity }}")
+                                            }
+                                        }
+                                    ) {
+                                        Icon(item.icon, contentDescription = item.label)
                                     }
-                                ) {
-                                    Icon(icon, contentDescription = label)
+                                } else if (item.screen == AppScreen.PAYMENT && unpaidBillings.isNotEmpty()) {
+                                    BadgedBox(
+                                        badge = {
+                                            Badge {
+                                                Text("${unpaidBillings.size}")
+                                            }
+                                        }
+                                    ) {
+                                        Icon(item.icon, contentDescription = item.label)
+                                    }
+                                } else {
+                                    Icon(item.icon, contentDescription = item.label)
                                 }
-                            } else {
-                                Icon(icon, contentDescription = label)
-                            }
-                        },
-                        label = { Text(label, fontWeight = FontWeight.SemiBold) },
-                        modifier = Modifier.testTag("bottom_nav_${screen.name.lowercase()}")
-                    )
+                            },
+                            label = {
+                                Text(
+                                    text = item.label,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1
+                                )
+                            },
+                            modifier = Modifier.testTag(item.tag)
+                        )
+                    }
                 }
             }
-        },
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            when (currentScreen) {
-                AppScreen.DASHBOARD -> {
-                    DashboardScreen(
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                when (currentScreen) {
+                    AppScreen.DASHBOARD -> DashboardScreen(
                         settings = settings,
                         activeCashier = activeCashier,
-                        allUsers = users,
+                        allUsers = cashierUsers,
                         products = products,
-                        transactions = transactions,
+                        transactions = allTransactions,
                         unpaidBillings = unpaidBillings,
                         onNavigate = { viewModel.navigateTo(it) },
                         onSwitchCashier = { user, pin -> viewModel.switchCashier(user, pin) },
                         onLockApp = { viewModel.lockApp() },
-                        onSelectTransaction = { inspectedTransaction = it },
-                        onSelectBillingToPay = { billing ->
-                            viewModel.selectBillingForPayment(billing)
-                            viewModel.navigateTo(AppScreen.PAYMENT)
-                        }
+                        onSelectTransaction = { viewModel.showTransactionReceiptModal(it) },
+                        onSelectBillingToPay = { viewModel.openBillingInPaymentScreen(it) }
                     )
-                }
 
-                AppScreen.POS -> {
-                    PosScreen(
+                    AppScreen.POS -> PosScreen(
                         products = products,
                         categories = categories,
                         settings = settings,
@@ -359,127 +430,150 @@ fun KasirKuApp(viewModel: KasirViewModel) {
                         editingTransactionId = editingTransactionId,
                         unpaidBillings = unpaidBillings,
                         cartItems = cartItems,
-                        onAddToCart = { viewModel.addProductToCart(it) },
-                        onUpdateQuantity = { id, q -> viewModel.updateCartItemQuantity(id, q) },
+                        onAddToCart = { viewModel.addToCart(it) },
+                        onUpdateQuantity = { id, qty -> viewModel.updateCartItemQuantity(id, qty) },
                         onUpdatePortionNotes = { id, notes -> viewModel.updateCartItemPortionNotes(id, notes) },
-                        onRemoveFromCart = { viewModel.removeCartItem(it) },
-                        onClearCart = { viewModel.clearCart() },
-                        onStartNewBilling = { viewModel.startNewOrderBilling() },
-                        onLoadUnpaidBilling = { viewModel.loadUnpaidBillingIntoPos(it) },
+                        onRemoveFromCart = { viewModel.removeFromCart(it) },
+                        onClearCart = { viewModel.clearOrderDraft() },
+                        onStartNewBilling = { viewModel.startNewBilling() },
+                        onLoadUnpaidBilling = { viewModel.loadUnpaidBillingToEdit(it) },
                         onSendOrderToKitchen = { viewModel.sendOrderToKitchen(context) },
                         onToggleViewMode = { mode ->
-                            viewModel.saveStoreSettings(settings.copy(productViewMode = mode))
+                            viewModel.updateStoreSettings(settings.copy(productViewMode = mode))
                         }
                     )
-                }
 
-                AppScreen.PAYMENT -> {
-                    PaymentScreen(
+                    AppScreen.PAYMENT -> PaymentScreen(
                         unpaidBillings = unpaidBillings,
                         selectedBilling = selectedBillingForPayment,
+                        paymentMethods = paymentMethods,
                         settings = settings,
-                        canGiveDiscount = activeCashier?.canGiveDiscount ?: true,
-                        discountInput = discountInput,
-                        paymentMethod = paymentMethod,
-                        amountPaidInput = amountPaidInput,
-                        paymentCalculation = paymentCalculation,
+                        activeCashier = activeCashier,
                         onSelectBilling = { viewModel.selectBillingForPayment(it) },
-                        onAddMoreItemsToBilling = { viewModel.loadUnpaidBillingIntoPos(it) },
-                        onViewKitchenTicket = { inspectedKitchenOrder = it },
-                        onSetDiscount = { viewModel.setDiscount(it) },
-                        onSetPaymentMethod = { viewModel.setPaymentMethod(it) },
-                        onSetAmountPaidInput = { viewModel.setAmountPaidInput(it) },
-                        onCompletePayment = { viewModel.completeSelectedBillingPayment(context) },
-                        onGoToNewOrder = {
-                            viewModel.startNewOrderBilling()
-                            viewModel.navigateTo(AppScreen.POS)
-                        }
+                        onEditBillingItems = { viewModel.loadUnpaidBillingToEdit(it) },
+                        onPrintKitchenTicket = { viewModel.showKitchenTicketModal(it) },
+                        onCancelBilling = { tx, reason -> viewModel.cancelTransaction(tx, reason) },
+                        onAddPaymentMethod = { name, isCash -> viewModel.addPaymentMethod(name, isCash) },
+                        onUpdatePaymentMethod = { method, newName, isCash ->
+                            viewModel.updatePaymentMethod(method, newName, isCash)
+                        },
+                        onDeletePaymentMethod = { method -> viewModel.deletePaymentMethod(method) },
+                        onCompletePayment = { tx, method, methodId, paid, discType, discIn, taxOn, taxPct, srvFee, note ->
+                            viewModel.payBilling(
+                                context = context,
+                                txWithItems = tx,
+                                paymentMethod = method,
+                                paymentMethodId = methodId,
+                                amountPaidInput = paid,
+                                discountType = discType,
+                                discountInput = discIn,
+                                enableTax = taxOn,
+                                taxPercent = taxPct,
+                                serviceFee = srvFee,
+                                notes = note
+                            )
+                        },
+                        onOpenPosScreen = { viewModel.navigateTo(AppScreen.POS) }
                     )
-                }
 
-                AppScreen.PRODUCTS -> {
-                    ProductScreen(
+                    AppScreen.PRODUCTS -> ProductScreen(
                         products = products,
                         categories = categories,
-                        onSaveProduct = { viewModel.saveProduct(it) },
-                        onMoveProductCategory = { prod, cat ->
-                            viewModel.moveSingleProductCategory(prod, cat)
+                        canEditPrice = activeCashier?.canEditPrice ?: true,
+                        onSaveProduct = { id, name, sell, unit, catId, catName, desc, img, active ->
+                            viewModel.saveProduct(
+                                id = id,
+                                name = name,
+                                sellPrice = sell,
+                                unit = unit,
+                                categoryId = catId,
+                                categoryName = catName,
+                                description = desc,
+                                imageUri = img,
+                                isActive = active
+                            )
                         },
                         onDeleteProduct = { viewModel.deleteProduct(it) }
                     )
-                }
 
-                AppScreen.CATEGORIES -> {
-                    CategoryScreen(
+                    AppScreen.CATEGORIES -> CategoryScreen(
                         categories = categories,
                         products = products,
-                        onSaveCategory = { viewModel.saveCategory(it) },
-                        onMoveCategoryProducts = { fromCat, toCat ->
-                            viewModel.moveProductsBetweenCategories(fromCat, toCat)
+                        onSaveCategory = { cat ->
+                            viewModel.saveCategory(cat.id, cat.name, cat.description, cat.colorHex, cat.iconName)
                         },
-                        onDeleteCategory = { targetCat, moveTarget ->
-                            viewModel.deleteCategory(targetCat, moveTarget)
+                        onMoveCategoryProducts = { fromCat, toCat ->
+                            viewModel.moveCategoryProducts(fromCat, toCat)
+                        },
+                        onDeleteCategory = { cat, reassignTarget ->
+                            viewModel.deleteCategory(cat, reassignTarget)
                         }
                     )
-                }
 
-                AppScreen.CUSTOMERS -> {
-                    CustomerScreen(
+                    AppScreen.HISTORY -> HistoryScreen(
+                        transactions = allTransactions,
+                        activeCashier = activeCashier,
+                        onOpenReceiptModal = { viewModel.showTransactionReceiptModal(it) },
+                        onOpenKitchenModal = { viewModel.showKitchenTicketModal(it) },
+                        onPayUnpaidBilling = { viewModel.openBillingInPaymentScreen(it) },
+                        onShareReceiptText = { viewModel.shareReceiptAsText(context, it) },
+                        onCancelTransaction = { txId, reason ->
+                            val target = allTransactions.find { it.transaction.id == txId }
+                            if (target != null) {
+                                viewModel.cancelTransaction(target, reason)
+                            }
+                        }
+                    )
+
+                    AppScreen.REPORTS -> ReportScreen(
+                        transactions = allTransactions,
+                        paymentMethods = paymentMethods,
+                        products = products,
+                        categories = categories,
                         customers = customers,
-                        onSaveCustomer = { viewModel.saveCustomer(it) },
+                        storeName = settings.storeName,
+                        onExportCsv = { uri, list, isExcel ->
+                            viewModel.exportReportCsvOrExcel(context, uri, list, isExcel)
+                        },
+                        onExportPdf = { uri, period, list ->
+                            viewModel.exportReportPdf(context, uri, period, list)
+                        }
+                    )
+
+                    AppScreen.CUSTOMERS -> CustomerScreen(
+                        customers = customers,
+                        onSaveCustomer = { cust ->
+                            viewModel.saveCustomer(
+                                id = cust.id,
+                                name = cust.name,
+                                phone = cust.phone,
+                                address = cust.address,
+                                notes = cust.notes,
+                                existingDebt = cust.totalDebt
+                            )
+                        },
                         onDeleteCustomer = { viewModel.deleteCustomer(it) }
                     )
-                }
 
-                AppScreen.HISTORY -> {
-                    HistoryScreen(
-                        transactions = transactions,
-                        activeCashier = activeCashier,
-                        onOpenReceiptModal = { inspectedTransaction = it },
-                        onOpenKitchenModal = { inspectedKitchenOrder = it },
-                        onPayUnpaidBilling = { billing ->
-                            viewModel.selectBillingForPayment(billing)
-                            viewModel.navigateTo(AppScreen.PAYMENT)
-                        },
-                        onShareReceiptText = { viewModel.shareReceiptText(context, it) },
-                        onCancelTransaction = { txId, reason ->
-                            viewModel.cancelTransaction(txId, reason)
-                        }
-                    )
-                }
-
-                AppScreen.REPORTS -> {
-                    ReportScreen(
-                        transactions = transactions,
-                        onExportCsv = { uri, title, periodLabel, list ->
-                            viewModel.exportReportCsvToUri(context, uri, title, periodLabel, list)
-                        },
-                        onExportPdf = { periodLabel, list ->
-                            viewModel.exportAndShareReportPdf(context, periodLabel, list)
-                        }
-                    )
-                }
-
-                AppScreen.SETTINGS -> {
-                    SettingsScreen(
+                    AppScreen.SETTINGS -> SettingsScreen(
                         settings = settings,
-                        users = users,
-                        isAdminUnlocked = isAdminUnlocked,
-                        onVerifyAdminPin = { viewModel.verifyAdminPin(it) },
-                        onSaveSettings = { viewModel.saveStoreSettings(it) },
-                        onSaveCashierUser = { u, pin -> viewModel.saveCashierUser(u, pin) },
+                        paymentMethods = paymentMethods,
+                        cashierUsers = cashierUsers,
+                        onSaveSettings = { viewModel.updateStoreSettings(it) },
+                        onAddPaymentMethod = { name, isCash -> viewModel.addPaymentMethod(name, isCash) },
+                        onUpdatePaymentMethod = { method, newName, isCash ->
+                            viewModel.updatePaymentMethod(method, newName, isCash)
+                        },
+                        onDeletePaymentMethod = { method -> viewModel.deletePaymentMethod(method) },
+                        onSaveCashierUser = { id, name, role, rawPin, hash, editPrice, disc, cancel, rep ->
+                            viewModel.saveCashierUser(id, name, role, rawPin, hash, editPrice, disc, cancel, rep)
+                        },
                         onDeleteCashierUser = { viewModel.deleteCashierUser(it) },
-                        onSelectDefaultPrinter = { name, addr, paper ->
-                            viewModel.selectDefaultPrinter(name, addr, paper)
-                        },
-                        onTestPrinter = { name, addr ->
-                            viewModel.testPrintBluetooth(context, name, addr)
-                        },
-                        onBackupToUri = { viewModel.performBackupToUri(context, it) },
-                        onRestoreFromUri = { viewModel.performRestoreFromUri(context, it) },
-                        onExportProductsCsv = { viewModel.exportProductsCsv(context, it) },
-                        onImportProductsCsv = { viewModel.importProductsCsv(context, it) },
-                        onLockAppNow = { viewModel.lockApp() }
+                        onBackupDatabase = { viewModel.exportDatabaseBackup(context, it) },
+                        onRestoreDatabase = { viewModel.restoreDatabaseBackup(context, it) },
+                        onResetTransactionsOnly = { viewModel.resetTransactionsHistoryOnly() },
+                        onResetFactory = { viewModel.resetAllFactoryData() },
+                        onEmitMessage = { viewModel.emitMessage(it) }
                     )
                 }
             }

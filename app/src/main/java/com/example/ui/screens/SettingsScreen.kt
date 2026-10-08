@@ -21,27 +21,34 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Store
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -49,7 +56,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -60,6 +67,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,77 +81,128 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.data.CashierUserEntity
+import com.example.data.PaymentMethodEntity
 import com.example.data.StoreSettingsEntity
 import com.example.service.BluetoothPrinterService
 import com.example.service.DiscoveredBluetoothDevice
 import com.example.ui.components.PermissionRationaleDialog
-import com.example.ui.components.PinLockDialog
 import com.example.ui.components.openAppNotificationAndPermissionSettings
 import com.example.util.SecurityAndFormatUtils
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     settings: StoreSettingsEntity,
-    users: List<CashierUserEntity>,
-    isAdminUnlocked: Boolean,
-    onVerifyAdminPin: (String) -> Boolean,
+    paymentMethods: List<PaymentMethodEntity>,
+    cashierUsers: List<CashierUserEntity>,
     onSaveSettings: (StoreSettingsEntity) -> Unit,
-    onSaveCashierUser: (CashierUserEntity, String?) -> Unit,
+    onAddPaymentMethod: (String, Boolean) -> Unit,
+    onUpdatePaymentMethod: (PaymentMethodEntity, String, Boolean) -> Unit,
+    onDeletePaymentMethod: (PaymentMethodEntity) -> Unit,
+    onSaveCashierUser: (
+        id: Long,
+        name: String,
+        role: String,
+        rawPin: String,
+        existingPinHash: String,
+        canEditPrice: Boolean,
+        canGiveDiscount: Boolean,
+        canCancelTransaction: Boolean,
+        canViewReports: Boolean
+    ) -> Unit,
     onDeleteCashierUser: (CashierUserEntity) -> Unit,
-    onSelectDefaultPrinter: (String, String, Int) -> Unit,
-    onTestPrinter: (String, String) -> Unit,
-    onBackupToUri: (Uri) -> Unit,
-    onRestoreFromUri: (Uri) -> Unit,
-    onExportProductsCsv: (Uri) -> Unit,
-    onImportProductsCsv: (Uri) -> Unit,
-    onLockAppNow: () -> Unit
+    onBackupDatabase: (Uri) -> Unit,
+    onRestoreDatabase: (Uri) -> Unit,
+    onResetTransactionsOnly: () -> Unit,
+    onResetFactory: () -> Unit,
+    onEmitMessage: (String) -> Unit
 ) {
-    val context = LocalContext.current
-    var selectedSection by remember { mutableIntStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabs = listOf(
+        "Profil Resto & Struk",
+        "Metode Bayar & Billing",
+        "Printer Bluetooth",
+        "Kasir & PIN",
+        "Backup & Reset"
+    )
 
-    // Require Admin PIN if protectAdminSettings is enabled
-    if (settings.protectAdminSettings && !isAdminUnlocked) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-            contentAlignment = Alignment.Center
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        PrimaryScrollableTabRow(
+            selectedTabIndex = selectedTab,
+            edgePadding = 12.dp,
+            containerColor = MaterialTheme.colorScheme.surface
         ) {
-            PinLockDialog(
-                title = "Akses Menu Administrasi",
-                subtitle = "Masukkan PIN Admin untuk membuka Pengaturan (Default: 1234)",
-                canDismiss = false,
-                onVerifyPin = onVerifyAdminPin
+            tabs.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = {
+                        Text(
+                            text = title,
+                            fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
+                    modifier = Modifier.testTag("settings_tab_$index")
+                )
+            }
+        }
+
+        when (selectedTab) {
+            0 -> StoreProfileAndReceiptSettingsTab(settings = settings, onSave = onSaveSettings)
+            1 -> TransactionAndPaymentMethodsSettingsTab(
+                settings = settings,
+                paymentMethods = paymentMethods,
+                onSaveSettings = onSaveSettings,
+                onAddPaymentMethod = onAddPaymentMethod,
+                onUpdatePaymentMethod = onUpdatePaymentMethod,
+                onDeletePaymentMethod = onDeletePaymentMethod
+            )
+            2 -> BluetoothPrinterSettingsTab(
+                settings = settings,
+                onSave = onSaveSettings,
+                onEmitMessage = onEmitMessage
+            )
+            3 -> CashierUsersAndPinSettingsTab(
+                settings = settings,
+                users = cashierUsers,
+                onSaveSettings = onSaveSettings,
+                onSaveUser = onSaveCashierUser,
+                onDeleteUser = onDeleteCashierUser
+            )
+            4 -> BackupAndResetSettingsTab(
+                onBackup = onBackupDatabase,
+                onRestore = onRestoreDatabase,
+                onResetTransactionsOnly = onResetTransactionsOnly,
+                onResetFactory = onResetFactory
             )
         }
-        return
     }
+}
 
-    // Editable state synced with current settings
-    var draft by remember(settings) { mutableStateOf(settings) }
-    var taxPercentText by remember(settings.defaultTaxPercent) {
-        mutableStateOf(settings.defaultTaxPercent.toString())
-    }
-    var serviceFeeText by remember(settings.defaultServiceFee) {
-        mutableStateOf(settings.defaultServiceFee.toLong().toString())
-    }
-    var newAdminPin by remember { mutableStateOf("") }
+@Composable
+private fun StoreProfileAndReceiptSettingsTab(
+    settings: StoreSettingsEntity,
+    onSave: (StoreSettingsEntity) -> Unit
+) {
+    val context = LocalContext.current
+    var storeName by remember(settings) { mutableStateOf(settings.storeName) }
+    var storeAddress by remember(settings) { mutableStateOf(settings.storeAddress) }
+    var storePhone by remember(settings) { mutableStateOf(settings.storePhone) }
+    var storeEmail by remember(settings) { mutableStateOf(settings.storeEmail) }
+    var storeLogoUri by remember(settings) { mutableStateOf(settings.storeLogoUri) }
+    var receiptHeader by remember(settings) { mutableStateOf(settings.receiptHeader) }
+    var receiptFooter by remember(settings) { mutableStateOf(settings.receiptFooter) }
+    var invoicePrefix by remember(settings) { mutableStateOf(settings.invoicePrefix) }
+    var isDarkMode by remember(settings) { mutableStateOf(settings.isDarkMode) }
+    var productViewMode by remember(settings) { mutableStateOf(settings.productViewMode) }
+    var gridColumns by remember(settings) { mutableIntStateOf(settings.gridColumns) }
 
-    // Cashier Dialog States
-    var editingUser by remember { mutableStateOf<CashierUserEntity?>(null) }
-    var isAddingUser by remember { mutableStateOf(false) }
-    var userToDelete by remember { mutableStateOf<CashierUserEntity?>(null) }
-
-    // Bluetooth Printer States
-    var pairedDevices by remember { mutableStateOf<List<DiscoveredBluetoothDevice>>(emptyList()) }
-    var btStatusMessage by remember { mutableStateOf<String?>(null) }
-    var showBtPermissionRationale by remember { mutableStateOf(false) }
-
-    // Restore Confirmation State
-    var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
-
-    // SAF Launchers
-    val logoPickerLauncher = rememberLauncherForActivityResult(
+    val logoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
@@ -154,823 +213,453 @@ fun SettingsScreen(
                 )
             } catch (_: Exception) {
             }
-            draft = draft.copy(storeLogoUri = uri.toString())
+            storeLogoUri = uri.toString()
         }
     }
 
-    val createBackupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
-    ) { uri ->
-        if (uri != null) onBackupToUri(uri)
-    }
-
-    val openRestoreLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            pendingRestoreUri = uri
-        }
-    }
-
-    val exportCsvLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/csv")
-    ) { uri ->
-        if (uri != null) onExportProductsCsv(uri)
-    }
-
-    val importCsvLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) onImportProductsCsv(uri)
-    }
-
-    val enableBtLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
     ) {
-        BluetoothPrinterService.getPairedDevices(context)
-            .onSuccess {
-                pairedDevices = it
-                btStatusMessage = "Ditemukan ${it.size} perangkat Bluetooth terpasang."
-            }
-            .onFailure { btStatusMessage = it.message }
-    }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("Identitas Restoran / Warung", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
-    val btPermLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { map ->
-        if (map.values.all { it }) {
-            if (!BluetoothPrinterService.isBluetoothEnabled(context)) {
-                enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-            } else {
-                BluetoothPrinterService.getPairedDevices(context)
-                    .onSuccess {
-                        pairedDevices = it
-                        btStatusMessage = "Ditemukan ${it.size} perangkat Bluetooth terpasang."
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (storeLogoUri.isNotBlank()) {
+                            AsyncImage(
+                                model = Uri.parse(storeLogoUri),
+                                contentDescription = "Logo Resto",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Store,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                        Column {
+                            OutlinedButton(
+                                onClick = {
+                                    logoPicker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                            ) {
+                                Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Pilih Logo Resto")
+                            }
+                            if (storeLogoUri.isNotBlank()) {
+                                TextButton(onClick = { storeLogoUri = "" }) {
+                                    Text("Hapus Logo", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
                     }
-                    .onFailure { btStatusMessage = it.message }
+
+                    OutlinedTextField(
+                        value = storeName,
+                        onValueChange = { storeName = it },
+                        label = { Text("Nama Restoran / Warung") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_store_name")
+                    )
+                    OutlinedTextField(
+                        value = storeAddress,
+                        onValueChange = { storeAddress = it },
+                        label = { Text("Alamat Lengkap") },
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = storePhone,
+                        onValueChange = { storePhone = it },
+                        label = { Text("Nomor Telepon / WhatsApp") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = storeEmail,
+                        onValueChange = { storeEmail = it },
+                        label = { Text("Email / Instagram (Opsional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
-        } else {
-            showBtPermissionRationale = true
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("Teks Struk & Tampilan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
+                    OutlinedTextField(
+                        value = invoicePrefix,
+                        onValueChange = { invoicePrefix = it },
+                        label = { Text("Prefix Kode Billing (Contoh: BIL)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = receiptHeader,
+                        onValueChange = { receiptHeader = it },
+                        label = { Text("Header Struk (Ucapan Atas)") },
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = receiptFooter,
+                        onValueChange = { receiptFooter = it },
+                        label = { Text("Footer Struk (Ucapan Bawah)") },
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Tema Gelap (Dark Mode)")
+                        Switch(checked = isDarkMode, onCheckedChange = { isDarkMode = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Tampilan Menu Kasir")
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(
+                                selected = productViewMode == "GRID",
+                                onClick = { productViewMode = "GRID" },
+                                label = { Text("Grid") }
+                            )
+                            FilterChip(
+                                selected = productViewMode == "LIST",
+                                onClick = { productViewMode = "LIST" },
+                                label = { Text("List") }
+                            )
+                        }
+                    }
+
+                    if (productViewMode == "GRID") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Jumlah Kolom Grid")
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FilterChip(
+                                    selected = gridColumns == 2,
+                                    onClick = { gridColumns = 2 },
+                                    label = { Text("2 Kolom") }
+                                )
+                                FilterChip(
+                                    selected = gridColumns == 3,
+                                    onClick = { gridColumns = 3 },
+                                    label = { Text("3 Kolom") }
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            onSave(
+                                settings.copy(
+                                    storeName = storeName.trim().ifBlank { "KasirKu" },
+                                    storeAddress = storeAddress.trim(),
+                                    storePhone = storePhone.trim(),
+                                    storeEmail = storeEmail.trim(),
+                                    storeLogoUri = storeLogoUri,
+                                    receiptHeader = receiptHeader.trim(),
+                                    receiptFooter = receiptFooter.trim(),
+                                    invoicePrefix = invoicePrefix.trim().ifBlank { "BIL" },
+                                    isDarkMode = isDarkMode,
+                                    productViewMode = productViewMode,
+                                    gridColumns = gridColumns
+                                )
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("btn_save_store_profile")
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Simpan Profil & Struk", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
     }
+}
 
-    if (showBtPermissionRationale) {
-        PermissionRationaleDialog(
-            title = "Izin Bluetooth Diperlukan",
-            rationaleMessage = "Izin Bluetooth diperlukan untuk menampilkan daftar printer thermal Bluetooth yang terpasang dan melakukan tes cetak.",
-            onDismiss = { showBtPermissionRationale = false },
-            onOpenSettings = { openAppNotificationAndPermissionSettings(context) }
-        )
-    }
+@Composable
+private fun TransactionAndPaymentMethodsSettingsTab(
+    settings: StoreSettingsEntity,
+    paymentMethods: List<PaymentMethodEntity>,
+    onSaveSettings: (StoreSettingsEntity) -> Unit,
+    onAddPaymentMethod: (String, Boolean) -> Unit,
+    onUpdatePaymentMethod: (PaymentMethodEntity, String, Boolean) -> Unit,
+    onDeletePaymentMethod: (PaymentMethodEntity) -> Unit
+) {
+    var defaultTax by remember(settings) { mutableStateOf(settings.defaultTaxPercentage.toString()) }
+    var defaultServiceFee by remember(settings) { mutableStateOf(settings.defaultServiceFee.toLong().toString()) }
+    var enableTaxByDefault by remember(settings) { mutableStateOf(settings.enableTaxByDefault) }
+    var enableRounding by remember(settings) { mutableStateOf(settings.enableRounding) }
+    var roundingMultiple by remember(settings) { mutableIntStateOf(settings.roundingMultiple) }
 
-    if (pendingRestoreUri != null) {
+    var newMethodName by remember { mutableStateOf("") }
+    var newMethodIsCash by remember { mutableStateOf(false) }
+    var editingMethod by remember { mutableStateOf<PaymentMethodEntity?>(null) }
+    var editingName by remember { mutableStateOf("") }
+    var editingIsCash by remember { mutableStateOf(false) }
+
+    if (editingMethod != null) {
         AlertDialog(
-            onDismissRequest = { pendingRestoreUri = null },
-            title = { Text("Konfirmasi Restore Database", fontWeight = FontWeight.Bold) },
+            onDismissRequest = { editingMethod = null },
+            title = { Text("Edit Metode Pembayaran", fontWeight = FontWeight.Bold) },
             text = {
-                Text("Proses Restore akan memvalidasi file backup terlebih dahulu, lalu mengganti data saat ini dengan data dari file backup. Apakah Anda yakin ingin melanjutkan?")
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Contoh perubahan: TUNAI → CASH, QRIS → QRIS BCA, TRANSFER → BANK BCA. Transaksi lama di riwayat tetap aman.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = editingName,
+                        onValueChange = { editingName = it },
+                        label = { Text("Nama Metode Pembayaran") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { editingIsCash = !editingIsCash }
+                    ) {
+                        Checkbox(checked = editingIsCash, onCheckedChange = { editingIsCash = it })
+                        Text(
+                            "Metode Tunai (Hitung uang diterima & kembalian)",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val target = pendingRestoreUri!!
-                        pendingRestoreUri = null
-                        onRestoreFromUri(target)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        val target = editingMethod
+                        if (target != null && editingName.isNotBlank()) {
+                            onUpdatePaymentMethod(target, editingName, editingIsCash)
+                            editingMethod = null
+                        }
+                    }
                 ) {
-                    Text("Ya, Lanjutkan Restore")
+                    Text("Simpan")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingRestoreUri = null }) {
+                TextButton(onClick = { editingMethod = null }) {
                     Text("Batal")
                 }
             }
         )
     }
 
-    if (isAddingUser || editingUser != null) {
-        CashierUserFormDialog(
-            initialUser = editingUser ?: CashierUserEntity(name = "", role = "KASIR"),
-            onDismiss = {
-                isAddingUser = false
-                editingUser = null
-            },
-            onSave = { user, rawPin ->
-                onSaveCashierUser(user, rawPin)
-                isAddingUser = false
-                editingUser = null
-            }
-        )
-    }
-
-    if (userToDelete != null) {
-        val target = userToDelete!!
-        AlertDialog(
-            onDismissRequest = { userToDelete = null },
-            title = { Text("Hapus Kasir?", fontWeight = FontWeight.Bold) },
-            text = { Text("Hapus akun kasir '${target.name}'?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDeleteCashierUser(target)
-                        userToDelete = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Hapus")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { userToDelete = null }) { Text("Batal") }
-            }
-        )
-    }
-
-    val sectionTitles = listOf(
-        "Info Resto",
-        "Kasir & Akses",
-        "Transaksi & Billing",
-        "Printer Bluetooth",
-        "Tampilan",
-        "Backup & Export",
-        "Keamanan"
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
     ) {
-        ScrollableTabRow(
-            selectedTabIndex = selectedSection,
-            edgePadding = 12.dp
-        ) {
-            sectionTitles.forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedSection == index,
-                    onClick = { selectedSection = index },
-                    text = { Text(title, fontWeight = FontWeight.Bold) }
-                )
-            }
-        }
+        // 1. Flexible Payment Methods Management (No ON/OFF Switches!)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Payments,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "Kelola Metode Pembayaran",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Text(
+                                text = "Tambah manual, edit nama, atau hapus metode pembayaran",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
 
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            when (selectedSection) {
-                0 -> {
-                    // INFORMASI RESTO / WARUNG
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
+                    // Add new method box
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            Text(
+                                text = "Tambah Metode Pembayaran Baru",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Informasi Profil Resto / Warung", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    if (draft.storeLogoUri.isNotBlank()) {
-                                        AsyncImage(
-                                            model = Uri.parse(draft.storeLogoUri),
-                                            contentDescription = "Logo Resto",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier
-                                                .size(68.dp)
-                                                .clip(RoundedCornerShape(14.dp))
-                                        )
-                                    } else {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(68.dp)
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(Icons.Default.Image, contentDescription = null)
-                                        }
-                                    }
-                                    Column {
-                                        OutlinedButton(
-                                            onClick = {
-                                                logoPickerLauncher.launch(
-                                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                                )
-                                            }
-                                        ) {
-                                            Text("Pilih Logo Resto")
-                                        }
-                                        if (draft.storeLogoUri.isNotBlank()) {
-                                            TextButton(onClick = { draft = draft.copy(storeLogoUri = "") }) {
-                                                Text("Hapus Logo")
-                                            }
-                                        }
-                                    }
-                                }
-
                                 OutlinedTextField(
-                                    value = draft.storeName,
-                                    onValueChange = { draft = draft.copy(storeName = it) },
-                                    label = { Text("Nama Resto / Warung *") },
+                                    value = newMethodName,
+                                    onValueChange = { newMethodName = it },
+                                    placeholder = { Text("Misal: DEBIT, EDC, DANA, OVO...") },
                                     singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("settings_input_new_payment_method")
                                 )
-                                OutlinedTextField(
-                                    value = draft.storeAddress,
-                                    onValueChange = { draft = draft.copy(storeAddress = it) },
-                                    label = { Text("Alamat Resto") },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = draft.storePhone,
-                                    onValueChange = { draft = draft.copy(storePhone = it) },
-                                    label = { Text("Nomor HP / Telepon") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = draft.storeEmail,
-                                    onValueChange = { draft = draft.copy(storeEmail = it) },
-                                    label = { Text("Email (Opsional)") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = draft.storeNpwp,
-                                    onValueChange = { draft = draft.copy(storeNpwp = it) },
-                                    label = { Text("NPWP (Opsional)") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = draft.receiptFooter,
-                                    onValueChange = { draft = draft.copy(receiptFooter = it) },
-                                    label = { Text("Footer Struk") },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
                                 Button(
-                                    onClick = { onSaveSettings(draft) },
-                                    modifier = Modifier.fillMaxWidth()
+                                    onClick = {
+                                        if (newMethodName.isNotBlank()) {
+                                            onAddPaymentMethod(newMethodName, newMethodIsCash)
+                                            newMethodName = ""
+                                            newMethodIsCash = false
+                                        }
+                                    },
+                                    enabled = newMethodName.isNotBlank(),
+                                    modifier = Modifier.testTag("settings_btn_add_payment_method")
                                 ) {
-                                    Icon(Icons.Default.Save, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Simpan Informasi Resto")
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Tambah")
                                 }
                             }
-                        }
-                    }
-                }
-
-                1 -> {
-                    // PENGATURAN KASIR & HAK AKSES
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Daftar Kasir & Hak Akses", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Button(onClick = { isAddingUser = true }) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Tambah Kasir")
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { newMethodIsCash = !newMethodIsCash }
+                            ) {
+                                Checkbox(checked = newMethodIsCash, onCheckedChange = { newMethodIsCash = it })
+                                Text(
+                                    text = "Hitung uang pelanggan & kembalian otomatis (Tunai)",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }
 
-                    items(users.size) { idx ->
-                        val u = users[idx]
-                        Card(
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    HorizontalDivider()
+
+                    Text(
+                        text = "Daftar Metode Pembayaran Tersimpan (${paymentMethods.size})",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    paymentMethods.forEach { method ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(14.dp),
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("${u.name} (${u.role})", fontWeight = FontWeight.Bold)
-                                    val perms = buildList {
-                                        if (u.canGiveDiscount) add("Diskon")
-                                        if (u.canVoidTransaction) add("Batal Billing")
-                                        if (u.canViewReports) add("Laporan")
-                                        if (u.canManageSettings) add("Pengaturan")
-                                    }
                                     Text(
-                                        text = "Akses: ${perms.joinToString(", ").ifEmpty { "Kasir Dasar" }}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = method.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.ExtraBold
                                     )
+                                    if (method.requiresCashInput) {
+                                        Text(
+                                            text = "Metode Tunai (Input uang & kembalian)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 }
                                 Row {
-                                    IconButton(onClick = { editingUser = u }) {
-                                        Icon(Icons.Default.Edit, contentDescription = "Edit Kasir", tint = MaterialTheme.colorScheme.primary)
-                                    }
-                                    if (users.size > 1) {
-                                        IconButton(onClick = { userToDelete = u }) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Hapus Kasir", tint = MaterialTheme.colorScheme.error)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                2 -> {
-                    // PENGATURAN TRANSAKSI & BILLING
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text("Pengaturan Pembayaran Billing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-                                SettingSwitchRow(
-                                    title = "Aktifkan Fitur Diskon",
-                                    subtitle = "Izinkan potongan diskon saat pembayaran billing",
-                                    checked = draft.enableDiscount,
-                                    onCheckedChange = { draft = draft.copy(enableDiscount = it) }
-                                )
-
-                                SettingSwitchRow(
-                                    title = "Aktifkan Pajak Otomatis (PB1 / PPN)",
-                                    subtitle = "Tambahkan pajak otomatis saat pembayaran billing",
-                                    checked = draft.enableTax,
-                                    onCheckedChange = { draft = draft.copy(enableTax = it) }
-                                )
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    OutlinedTextField(
-                                        value = taxPercentText,
-                                        onValueChange = {
-                                            taxPercentText = it
-                                            draft = draft.copy(defaultTaxPercent = it.toDoubleOrNull() ?: 0.0)
+                                    IconButton(
+                                        onClick = {
+                                            editingMethod = method
+                                            editingName = method.name
+                                            editingIsCash = method.isCashType
                                         },
-                                        label = { Text("Persentase Pajak (%)") },
-                                        singleLine = true,
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    OutlinedTextField(
-                                        value = serviceFeeText,
-                                        onValueChange = {
-                                            serviceFeeText = it.filter { ch -> ch.isDigit() }
-                                            draft = draft.copy(defaultServiceFee = serviceFeeText.toDoubleOrNull() ?: 0.0)
-                                        },
-                                        label = { Text("Biaya Layanan Default (Rp)") },
-                                        singleLine = true,
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-
-                                SettingSwitchRow(
-                                    title = "Pembulatan Harga Otomatis",
-                                    subtitle = "Bulatkan total tagihan ke ratusan Rupiah terdekat",
-                                    checked = draft.enableRounding,
-                                    onCheckedChange = { draft = draft.copy(enableRounding = it) }
-                                )
-
-                                Button(
-                                    onClick = { onSaveSettings(draft) },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.Save, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Simpan Pengaturan Transaksi")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                3 -> {
-                    // PENGATURAN PRINTER THERMAL BLUETOOTH
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text("Pengaturan Printer Thermal Bluetooth", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Text("Printer Default Saat Ini:", style = MaterialTheme.typography.labelSmall)
-                                        Text(
-                                            text = if (draft.defaultPrinterAddress.isNotBlank()) {
-                                                "${draft.defaultPrinterName} (${draft.defaultPrinterAddress})"
-                                            } else {
-                                                "Belum ada printer dipilih"
-                                            },
-                                            fontWeight = FontWeight.ExtraBold
+                                        modifier = Modifier.testTag("settings_edit_method_${method.name}")
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = "Edit ${method.name}",
+                                            tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
-                                }
-
-                                Text("Ukuran Kertas Struk Thermal", fontWeight = FontWeight.SemiBold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    FilterChip(
-                                        selected = draft.paperSizeMm == 58,
-                                        onClick = { draft = draft.copy(paperSizeMm = 58) },
-                                        label = { Text("58mm (32 Karakter)") }
-                                    )
-                                    FilterChip(
-                                        selected = draft.paperSizeMm == 80,
-                                        onClick = { draft = draft.copy(paperSizeMm = 80) },
-                                        label = { Text("80mm (48 Karakter)") }
-                                    )
-                                }
-
-                                Text("Jumlah Salinan Cetak: ${draft.printCopies}x", fontWeight = FontWeight.SemiBold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf(1, 2, 3).forEach { count ->
-                                        FilterChip(
-                                            selected = draft.printCopies == count,
-                                            onClick = { draft = draft.copy(printCopies = count) },
-                                            label = { Text("$count Salinan") }
+                                    IconButton(
+                                        onClick = { onDeletePaymentMethod(method) },
+                                        enabled = paymentMethods.size > 1,
+                                        modifier = Modifier.testTag("settings_delete_method_${method.name}")
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Delete,
+                                            contentDescription = "Hapus ${method.name}",
+                                            tint = if (paymentMethods.size > 1) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline
                                         )
                                     }
-                                }
-
-                                SettingSwitchRow(
-                                    title = "Cetak Tiket Dapur Otomatis",
-                                    subtitle = "Langsung cetak pesanan dapur saat tombol KIRIM PESANAN ditekan",
-                                    checked = draft.autoPrintKitchenTicket,
-                                    onCheckedChange = { draft = draft.copy(autoPrintKitchenTicket = it) }
-                                )
-
-                                SettingSwitchRow(
-                                    title = "Cetak Struk Lunas Otomatis",
-                                    subtitle = "Langsung cetak struk pembayaran saat tombol BAYAR & SELESAIKAN ditekan",
-                                    checked = draft.autoPrintReceipt,
-                                    onCheckedChange = { draft = draft.copy(autoPrintReceipt = it) }
-                                )
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            if (!BluetoothPrinterService.hasBluetoothPermissions(context)) {
-                                                btPermLauncher.launch(BluetoothPrinterService.getRequiredBluetoothPermissions())
-                                            } else if (!BluetoothPrinterService.isBluetoothEnabled(context)) {
-                                                enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                                            } else {
-                                                BluetoothPrinterService.getPairedDevices(context)
-                                                    .onSuccess {
-                                                        pairedDevices = it
-                                                        btStatusMessage = "Ditemukan ${it.size} perangkat Bluetooth terpasang."
-                                                    }
-                                                    .onFailure { btStatusMessage = it.message }
-                                            }
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Cari Printer")
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            onSaveSettings(draft)
-                                            onTestPrinter(draft.defaultPrinterName.ifBlank { "Printer Default" }, draft.defaultPrinterAddress)
-                                        },
-                                        enabled = draft.defaultPrinterAddress.isNotBlank(),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Tes Printer")
-                                    }
-                                }
-
-                                if (btStatusMessage != null) {
-                                    Text(
-                                        text = btStatusMessage!!,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-
-                                pairedDevices.forEach { dev ->
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (draft.defaultPrinterAddress == dev.address) {
-                                            MaterialTheme.colorScheme.primaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceVariant
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                draft = draft.copy(
-                                                    defaultPrinterName = dev.name,
-                                                    defaultPrinterAddress = dev.address
-                                                )
-                                                onSelectDefaultPrinter(dev.name, dev.address, draft.paperSizeMm)
-                                            }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(12.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column {
-                                                Text(dev.name, fontWeight = FontWeight.Bold)
-                                                Text(dev.address, style = MaterialTheme.typography.bodySmall)
-                                            }
-                                            Text(
-                                                if (draft.defaultPrinterAddress == dev.address) "Terpilih" else "Pilih Default",
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Button(
-                                    onClick = { onSaveSettings(draft) },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.Save, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Simpan Pengaturan Printer")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                4 -> {
-                    // PENGATURAN TAMPILAN
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text("Pengaturan Tampilan & Tema", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-                                Text("Mode Tema Aplikasi", fontWeight = FontWeight.SemiBold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf("LIGHT" to "Terang", "DARK" to "Gelap", "SYSTEM" to "Sistem").forEach { (key, label) ->
-                                        FilterChip(
-                                            selected = draft.themeMode == key,
-                                            onClick = {
-                                                draft = draft.copy(themeMode = key)
-                                                onSaveSettings(draft)
-                                            },
-                                            label = { Text(label) }
-                                        )
-                                    }
-                                }
-
-                                Text("Ukuran Teks", fontWeight = FontWeight.SemiBold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf(0.9f to "Ringkas", 1.0f to "Normal", 1.15f to "Besar").forEach { (scale, label) ->
-                                        FilterChip(
-                                            selected = draft.textScale == scale,
-                                            onClick = {
-                                                draft = draft.copy(textScale = scale)
-                                                onSaveSettings(draft)
-                                            },
-                                            label = { Text(label) }
-                                        )
-                                    }
-                                }
-
-                                Text("Tampilan Menu di Halaman Pesan", fontWeight = FontWeight.SemiBold)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    FilterChip(
-                                        selected = draft.productViewMode == "GRID",
-                                        onClick = {
-                                            draft = draft.copy(productViewMode = "GRID")
-                                            onSaveSettings(draft)
-                                        },
-                                        label = { Text("Grid (Kotak)") }
-                                    )
-                                    FilterChip(
-                                        selected = draft.productViewMode == "LIST",
-                                        onClick = {
-                                            draft = draft.copy(productViewMode = "LIST")
-                                            onSaveSettings(draft)
-                                        },
-                                        label = { Text("List (Baris)") }
-                                    )
-                                }
-
-                                if (draft.productViewMode == "GRID") {
-                                    Text("Jumlah Menu per Baris (Grid)", fontWeight = FontWeight.SemiBold)
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        listOf(2, 3).forEach { cols ->
-                                            FilterChip(
-                                                selected = draft.gridColumns == cols,
-                                                onClick = {
-                                                    draft = draft.copy(gridColumns = cols)
-                                                    onSaveSettings(draft)
-                                                },
-                                                label = { Text("$cols Kolom") }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                5 -> {
-                    // BACKUP, RESTORE, EXPORT, IMPORT
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text("Backup & Restore Database Lengkap", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Simpan seluruh database (menu, kategori, billing, riwayat transaksi, pelanggan, pengaturan) ke penyimpanan HP Anda menggunakan Storage Access Framework.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                Button(
-                                    onClick = {
-                                        val fileName = "KasirKu_Resto_Backup_${SecurityAndFormatUtils.formatInvoiceDate(System.currentTimeMillis())}.json"
-                                        createBackupLauncher.launch(fileName)
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("btn_backup_database")
-                                ) {
-                                    Icon(Icons.Default.Backup, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Backup Database Sekarang (JSON)")
-                                }
-
-                                OutlinedButton(
-                                    onClick = {
-                                        openRestoreLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("btn_restore_database")
-                                ) {
-                                    Icon(Icons.Default.Restore, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Restore Database dari File Backup")
-                                }
-
-                                HorizontalDivider()
-
-                                Text("Export & Import Daftar Menu (CSV)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Ekspor daftar menu makanan/minuman ke Excel/CSV atau impor menu massal dari file CSV.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            exportCsvLauncher.launch("Daftar_Menu_KasirKu.csv")
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Export CSV")
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            importCsvLauncher.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*"))
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Import CSV")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                6 -> {
-                    // KEAMANAN & KUNCI APLIKASI
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text("Pengaturan Keamanan & PIN", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-                                SettingSwitchRow(
-                                    title = "Lindungi Menu Pengaturan dengan PIN Admin",
-                                    subtitle = "Wajib memasukkan PIN Admin sebelum mengubah pengaturan resto",
-                                    checked = draft.protectAdminSettings,
-                                    onCheckedChange = { draft = draft.copy(protectAdminSettings = it) }
-                                )
-
-                                SettingSwitchRow(
-                                    title = "Kunci Aplikasi Saat Baru Dibuka",
-                                    subtitle = "Wajib memasukkan PIN Kasir/Admin ketika membuka aplikasi",
-                                    checked = draft.requirePinOnStartup,
-                                    onCheckedChange = { draft = draft.copy(requirePinOnStartup = it) }
-                                )
-
-                                OutlinedTextField(
-                                    value = newAdminPin,
-                                    onValueChange = { newAdminPin = it.filter { ch -> ch.isDigit() } },
-                                    label = { Text("Ubah PIN Admin Baru (Kosongkan jika tidak diubah)") },
-                                    visualTransformation = PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                Button(
-                                    onClick = {
-                                        val updated = if (newAdminPin.length >= 4) {
-                                            draft.copy(adminPinHash = SecurityAndFormatUtils.hashPin(newAdminPin))
-                                        } else {
-                                            draft
-                                        }
-                                        onSaveSettings(updated)
-                                        newAdminPin = ""
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.Save, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Simpan Pengaturan Keamanan")
-                                }
-
-                                HorizontalDivider()
-
-                                OutlinedButton(
-                                    onClick = onLockAppNow,
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.Lock, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Kunci Aplikasi / Logout Sekarang")
                                 }
                             }
                         }
@@ -978,147 +667,779 @@ fun SettingsScreen(
                 }
             }
         }
-    }
-}
 
-@Composable
-private fun SettingSwitchRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.SemiBold)
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
-}
-
-@Composable
-private fun CashierUserFormDialog(
-    initialUser: CashierUserEntity,
-    onDismiss: () -> Unit,
-    onSave: (CashierUserEntity, String?) -> Unit
-) {
-    var name by remember { mutableStateOf(initialUser.name) }
-    var role by remember { mutableStateOf(initialUser.role) }
-    var rawPin by remember { mutableStateOf("") }
-    var canGiveDiscount by remember { mutableStateOf(initialUser.canGiveDiscount) }
-    var canVoidTransaction by remember { mutableStateOf(initialUser.canVoidTransaction) }
-    var canViewReports by remember { mutableStateOf(initialUser.canViewReports) }
-    var canManageSettings by remember { mutableStateOf(initialUser.canManageSettings) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                if (initialUser.id == 0L) "Tambah Kasir Baru" else "Edit Kasir",
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it; errorMsg = null },
-                    label = { Text("Nama Kasir *") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = role == "KASIR",
-                        onClick = { role = "KASIR" },
-                        label = { Text("KASIR") }
-                    )
-                    FilterChip(
-                        selected = role == "ADMIN",
-                        onClick = { role = "ADMIN" },
-                        label = { Text("ADMIN") }
-                    )
-                }
-                OutlinedTextField(
-                    value = rawPin,
-                    onValueChange = { rawPin = it.filter { ch -> ch.isDigit() } },
-                    label = {
-                        Text(if (initialUser.id == 0L) "PIN Kasir (Min 4 angka) *" else "PIN Baru (Kosongkan jika tetap)")
-                    },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Text("Hak Akses Kasir:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
-                PermissionCheckbox("Beri Diskon Pembayaran", canGiveDiscount) { canGiveDiscount = it }
-                PermissionCheckbox("Batalkan Billing / Transaksi", canVoidTransaction) { canVoidTransaction = it }
-                PermissionCheckbox("Lihat Laporan Penjualan", canViewReports) { canViewReports = it }
-                PermissionCheckbox("Ubah Pengaturan Resto", canManageSettings) { canManageSettings = it }
-
-                if (errorMsg != null) {
-                    Text(errorMsg!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (name.trim().isEmpty()) {
-                        errorMsg = "Nama kasir wajib diisi!"
-                        return@Button
-                    }
-                    if (initialUser.id == 0L && rawPin.length < 4) {
-                        errorMsg = "PIN minimal 4 digit!"
-                        return@Button
-                    }
-                    onSave(
-                        initialUser.copy(
-                            name = name.trim(),
-                            role = role,
-                            canGiveDiscount = canGiveDiscount,
-                            canVoidTransaction = canVoidTransaction,
-                            canViewReports = canViewReports,
-                            canManageSettings = canManageSettings
-                        ),
-                        rawPin.ifBlank { null }
-                    )
-                }
+        // 2. Tax, Service Fee & Rounding Settings
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
-                Text("Simpan")
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("Pajak, Biaya Layanan & Pembulatan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Aktifkan Pajak Otomatis Saat Pembayaran")
+                        Switch(checked = enableTaxByDefault, onCheckedChange = { enableTaxByDefault = it })
+                    }
+
+                    OutlinedTextField(
+                        value = defaultTax,
+                        onValueChange = { defaultTax = it },
+                        label = { Text("Persentase Pajak Default (%)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = defaultServiceFee,
+                        onValueChange = { defaultServiceFee = it },
+                        label = { Text("Biaya Layanan / Kemasan Default (Rp)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Bulatkan Total Akhir Otomatis")
+                        Switch(checked = enableRounding, onCheckedChange = { enableRounding = it })
+                    }
+
+                    if (enableRounding) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(100, 500, 1000).forEach { mult ->
+                                FilterChip(
+                                    selected = roundingMultiple == mult,
+                                    onClick = { roundingMultiple = mult },
+                                    label = { Text("Ke Rp $mult") }
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            onSaveSettings(
+                                settings.copy(
+                                    defaultTaxPercentage = SecurityAndFormatUtils.parseDoubleInput(defaultTax),
+                                    defaultServiceFee = SecurityAndFormatUtils.parseDoubleInput(defaultServiceFee),
+                                    enableTaxByDefault = enableTaxByDefault,
+                                    enableRounding = enableRounding,
+                                    roundingMultiple = roundingMultiple
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Simpan Pengaturan Pajak & Pembulatan", fontWeight = FontWeight.Bold)
+                    }
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Batal") }
         }
-    )
+    }
 }
 
 @Composable
-private fun PermissionCheckbox(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+private fun BluetoothPrinterSettingsTab(
+    settings: StoreSettingsEntity,
+    onSave: (StoreSettingsEntity) -> Unit,
+    onEmitMessage: (String) -> Unit
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var paperSizeMm by remember(settings) { mutableIntStateOf(settings.paperSizeMm) }
+    var autoPrintKitchenTicket by remember(settings) { mutableStateOf(settings.autoPrintKitchenTicket) }
+    var autoPrintReceipt by remember(settings) { mutableStateOf(settings.autoPrintReceipt) }
+    var printCopies by remember(settings) { mutableIntStateOf(settings.printCopies) }
+    var defaultPrinterName by remember(settings) { mutableStateOf(settings.defaultPrinterName) }
+    var defaultPrinterAddress by remember(settings) { mutableStateOf(settings.defaultPrinterAddress) }
+
+    var pairedDevices by remember { mutableStateOf<List<DiscoveredBluetoothDevice>>(emptyList()) }
+    var showBtRationale by remember { mutableStateOf(false) }
+
+    val enableBtLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
     ) {
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
-        Text(label, style = MaterialTheme.typography.bodySmall)
+        BluetoothPrinterService.getPairedDevices(context)
+            .onSuccess { pairedDevices = it }
+            .onFailure { onEmitMessage(it.message ?: "Gagal memuat printer") }
+    }
+
+    val btPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val granted = perms.values.all { it }
+        if (granted) {
+            if (!BluetoothPrinterService.isBluetoothEnabled(context)) {
+                enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            } else {
+                BluetoothPrinterService.getPairedDevices(context)
+                    .onSuccess { pairedDevices = it }
+                    .onFailure { onEmitMessage(it.message ?: "Gagal memuat printer") }
+            }
+        } else {
+            showBtRationale = true
+        }
+    }
+
+    if (showBtRationale) {
+        PermissionRationaleDialog(
+            title = "Izin Bluetooth Diperlukan",
+            rationaleMessage = "KasirKu membutuhkan izin Bluetooth untuk memindai dan menghubungkan printer thermal kasir.",
+            onDismiss = { showBtRationale = false },
+            onOpenSettings = { openAppNotificationAndPermissionSettings(context) }
+        )
+    }
+
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("Konfigurasi Printer Thermal", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Ukuran Kertas Struk")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = paperSizeMm == 58,
+                                onClick = { paperSizeMm = 58 },
+                                label = { Text("58mm") }
+                            )
+                            FilterChip(
+                                selected = paperSizeMm == 80,
+                                onClick = { paperSizeMm = 80 },
+                                label = { Text("80mm") }
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Cetak Otomatis Tiket Dapur")
+                            Text(
+                                "Saat tombol KIRIM PESANAN ditekan",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = autoPrintKitchenTicket, onCheckedChange = { autoPrintKitchenTicket = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Cetak Otomatis Struk Pembayaran")
+                            Text(
+                                "Saat tombol BAYAR & SELESAIKAN ditekan",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = autoPrintReceipt, onCheckedChange = { autoPrintReceipt = it })
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Jumlah Rangkap Struk Bayar")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(1, 2, 3).forEach { c ->
+                                FilterChip(
+                                    selected = printCopies == c,
+                                    onClick = { printCopies = c },
+                                    label = { Text("${c}x") }
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Text(
+                        text = if (defaultPrinterAddress.isNotBlank()) {
+                            "Printer Utama: $defaultPrinterName ($defaultPrinterAddress)"
+                        } else {
+                            "Belum ada printer utama dipilih"
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                if (!BluetoothPrinterService.hasBluetoothPermissions(context)) {
+                                    btPermissionLauncher.launch(BluetoothPrinterService.getRequiredBluetoothPermissions())
+                                } else if (!BluetoothPrinterService.isBluetoothEnabled(context)) {
+                                    enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                } else {
+                                    BluetoothPrinterService.getPairedDevices(context)
+                                        .onSuccess { pairedDevices = it }
+                                        .onFailure { onEmitMessage(it.message ?: "Gagal memuat perangkat") }
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Cari Printer")
+                        }
+
+                        Button(
+                            onClick = {
+                                if (defaultPrinterAddress.isBlank()) {
+                                    onEmitMessage("Pilih printer Bluetooth terlebih dahulu")
+                                } else {
+                                    scope.launch {
+                                        BluetoothPrinterService.printTestPage(
+                                            context = context,
+                                            printerAddress = defaultPrinterAddress,
+                                            storeName = settings.storeName,
+                                            paperSizeMm = paperSizeMm
+                                        ).onSuccess { onEmitMessage(it) }
+                                            .onFailure { onEmitMessage("Tes cetak gagal: ${it.message}") }
+                                    }
+                                }
+                            },
+                            enabled = defaultPrinterAddress.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Tes Cetak")
+                        }
+                    }
+
+                    if (pairedDevices.isNotEmpty()) {
+                        Text(
+                            text = "Pilih dari Perangkat Bluetooth Tersambung:",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        pairedDevices.forEach { dev ->
+                            val isSelected = dev.address == defaultPrinterAddress
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        defaultPrinterName = dev.name
+                                        defaultPrinterAddress = dev.address
+                                    },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isSelected) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceVariant
+                                    }
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Bluetooth, contentDescription = null)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Column {
+                                            Text(dev.name, fontWeight = FontWeight.Bold)
+                                            Text(dev.address, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                    if (isSelected) {
+                                        Icon(
+                                            Icons.Default.CheckCircle,
+                                            contentDescription = "Terpilih",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            onSave(
+                                settings.copy(
+                                    paperSizeMm = paperSizeMm,
+                                    autoPrintKitchenTicket = autoPrintKitchenTicket,
+                                    autoPrintReceipt = autoPrintReceipt,
+                                    printCopies = printCopies,
+                                    defaultPrinterName = defaultPrinterName,
+                                    defaultPrinterAddress = defaultPrinterAddress
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Simpan Pengaturan Printer", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CashierUsersAndPinSettingsTab(
+    settings: StoreSettingsEntity,
+    users: List<CashierUserEntity>,
+    onSaveSettings: (StoreSettingsEntity) -> Unit,
+    onSaveUser: (
+        id: Long,
+        name: String,
+        role: String,
+        rawPin: String,
+        existingPinHash: String,
+        canEditPrice: Boolean,
+        canGiveDiscount: Boolean,
+        canCancelTransaction: Boolean,
+        canViewReports: Boolean
+    ) -> Unit,
+    onDeleteUser: (CashierUserEntity) -> Unit
+) {
+    var requirePinOnStartup by remember(settings) { mutableStateOf(settings.requirePinOnStartup) }
+    var showUserDialog by remember { mutableStateOf(false) }
+    var editingUser by remember { mutableStateOf<CashierUserEntity?>(null) }
+
+    if (showUserDialog) {
+        var name by remember { mutableStateOf(editingUser?.name ?: "") }
+        var role by remember { mutableStateOf(editingUser?.role ?: "KASIR") }
+        var pinInput by remember { mutableStateOf("") }
+        var canEditPrice by remember { mutableStateOf(editingUser?.canEditPrice ?: false) }
+        var canGiveDiscount by remember { mutableStateOf(editingUser?.canGiveDiscount ?: true) }
+        var canCancelTransaction by remember { mutableStateOf(editingUser?.canCancelTransaction ?: false) }
+        var canViewReports by remember { mutableStateOf(editingUser?.canViewReports ?: false) }
+
+        AlertDialog(
+            onDismissRequest = {
+                showUserDialog = false
+                editingUser = null
+            },
+            title = {
+                Text(
+                    if (editingUser == null) "Tambah Kasir / Admin" else "Edit Kasir / Admin",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Nama Kasir *") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = role == "ADMIN",
+                            onClick = {
+                                role = "ADMIN"
+                                canEditPrice = true
+                                canGiveDiscount = true
+                                canCancelTransaction = true
+                                canViewReports = true
+                            },
+                            label = { Text("ADMIN") }
+                        )
+                        FilterChip(
+                            selected = role == "KASIR",
+                            onClick = { role = "KASIR" },
+                            label = { Text("KASIR") }
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = { if (it.length <= 6) pinInput = it.filter { ch -> ch.isDigit() } },
+                        label = {
+                            Text(if (editingUser == null) "PIN (4-6 Angka) *" else "PIN Baru (Kosongkan jika tetap)")
+                        },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Izin Ubah Harga Menu", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = canEditPrice, onCheckedChange = { canEditPrice = it })
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Izin Beri Diskon", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = canGiveDiscount, onCheckedChange = { canGiveDiscount = it })
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Izin Batalkan Billing/Transaksi", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = canCancelTransaction, onCheckedChange = { canCancelTransaction = it })
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Izin Lihat Laporan", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = canViewReports, onCheckedChange = { canViewReports = it })
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onSaveUser(
+                            editingUser?.id ?: 0L,
+                            name,
+                            role,
+                            pinInput,
+                            editingUser?.pinHash ?: "",
+                            canEditPrice,
+                            canGiveDiscount,
+                            canCancelTransaction,
+                            canViewReports
+                        )
+                        showUserDialog = false
+                        editingUser = null
+                    },
+                    enabled = name.isNotBlank() && (editingUser != null || pinInput.length >= 4)
+                ) {
+                    Text("Simpan")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUserDialog = false; editingUser = null }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Kunci PIN Saat Aplikasi Dibuka", fontWeight = FontWeight.Bold)
+                            Text(
+                                "Default PIN Admin: 1234 | Kasir: 0000",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = requirePinOnStartup,
+                            onCheckedChange = {
+                                requirePinOnStartup = it
+                                onSaveSettings(settings.copy(requirePinOnStartup = it))
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Daftar Akun Kasir & Admin", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Button(
+                    onClick = {
+                        editingUser = null
+                        showUserDialog = true
+                    }
+                ) {
+                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Tambah Kasir")
+                }
+            }
+        }
+
+        items(users, key = { it.id }) { u ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("${u.name} (${u.role})", fontWeight = FontWeight.Bold)
+                        val perms = buildList {
+                            if (u.canEditPrice) add("Ubah Harga")
+                            if (u.canGiveDiscount) add("Diskon")
+                            if (u.canCancelTransaction) add("Batal Billing")
+                            if (u.canViewReports) add("Laporan")
+                        }
+                        Text(
+                            text = "Akses: ${perms.joinToString(", ").ifBlank { "Transaksi Standar" }}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row {
+                        IconButton(
+                            onClick = {
+                                editingUser = u
+                                showUserDialog = true
+                            }
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.primary)
+                        }
+                        if (users.size > 1) {
+                            IconButton(onClick = { onDeleteUser(u) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Hapus", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupAndResetSettingsTab(
+    onBackup: (Uri) -> Unit,
+    onRestore: (Uri) -> Unit,
+    onResetTransactionsOnly: () -> Unit,
+    onResetFactory: () -> Unit
+) {
+    var confirmResetTx by remember { mutableStateOf(false) }
+    var confirmResetFactory by remember { mutableStateOf(false) }
+
+    val backupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) onBackup(uri)
+    }
+
+    val restoreLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onRestore(uri)
+    }
+
+    if (confirmResetTx) {
+        AlertDialog(
+            onDismissRequest = { confirmResetTx = false },
+            title = { Text("Hapus Riwayat Transaksi?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Semua riwayat billing dan transaksi akan dihapus. Daftar menu dan kategori tetap tersimpan.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onResetTransactionsOnly()
+                        confirmResetTx = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Ya, Hapus Transaksi")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmResetTx = false }) { Text("Batal") }
+            }
+        )
+    }
+
+    if (confirmResetFactory) {
+        AlertDialog(
+            onDismissRequest = { confirmResetFactory = false },
+            title = { Text("Reset Data Awal Pabrik?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Seluruh transaksi, pelanggan, dan menu tambahan akan direset kembali ke menu contoh awal KasirKu.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onResetFactory()
+                        confirmResetFactory = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Ya, Reset Pabrik")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmResetFactory = false }) { Text("Batal") }
+            }
+        )
+    }
+
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("Backup & Restore Database Offline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Simpan seluruh data menu, kategori, metode pembayaran, pelanggan, dan transaksi ke file JSON di HP Anda.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Button(
+                        onClick = {
+                            val ts = SecurityAndFormatUtils.formatDateOnly(System.currentTimeMillis()).replace(" ", "_")
+                            backupLauncher.launch("Backup_KasirKu_$ts.json")
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("btn_backup_db")
+                    ) {
+                        Icon(Icons.Default.Backup, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Simpan File Backup (.json)", fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            restoreLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("btn_restore_db")
+                    ) {
+                        Icon(Icons.Default.Restore, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Pulihkan (Restore) dari File Backup")
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Reset Data",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+
+                    OutlinedButton(
+                        onClick = { confirmResetTx = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Hapus Riwayat Transaksi Saja", color = MaterialTheme.colorScheme.error)
+                    }
+
+                    Button(
+                        onClick = { confirmResetFactory = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Reset Seluruh Data ke Awal Pabrik")
+                    }
+                }
+            }
+        }
     }
 }

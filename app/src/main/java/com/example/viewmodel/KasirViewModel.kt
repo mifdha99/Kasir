@@ -4,292 +4,312 @@ import android.app.Application
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.CartItem
 import com.example.data.CashierUserEntity
 import com.example.data.CategoryEntity
 import com.example.data.CustomerEntity
+import com.example.data.DebtPaymentEntity
 import com.example.data.KasirDatabase
 import com.example.data.KasirRepository
-import com.example.data.PrinterDeviceEntity
+import com.example.data.PaymentMethodEntity
 import com.example.data.ProductEntity
 import com.example.data.StoreSettingsEntity
+import com.example.data.TransactionEntity
+import com.example.data.TransactionItemEntity
 import com.example.data.TransactionWithItems
 import com.example.service.BackupAndExportService
 import com.example.service.BluetoothPrinterService
 import com.example.util.SecurityAndFormatUtils
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.io.File
 
 enum class AppScreen(val title: String) {
-    DASHBOARD("Beranda KasirKu"),
+    DASHBOARD("KasirKu"),
     POS("Pesan Menu"),
     PAYMENT("Pembayaran Billing"),
-    PRODUCTS("Daftar Menu"),
+    PRODUCTS("Edit Menu dan Harga"),
     CATEGORIES("Kategori Menu"),
-    CUSTOMERS("Data Pelanggan"),
     HISTORY("Riwayat Transaksi"),
     REPORTS("Laporan Penjualan"),
-    SETTINGS("Pengaturan Resto")
+    CUSTOMERS("Pelanggan"),
+    SETTINGS("Pengaturan")
 }
 
-enum class ProductSortOption(val label: String) {
-    NAME("Nama (A-Z)"),
-    PRICE_ASC("Harga Terendah"),
-    PRICE_DESC("Harga Tertinggi"),
-    NEWEST("Terbaru")
-}
+class KasirViewModel(
+    application: Application,
+    private val repository: KasirRepository
+) : AndroidViewModel(application) {
 
-enum class ReportFilterPeriod(val label: String) {
-    TODAY("Hari Ini"),
-    YESTERDAY("Kemarin"),
-    LAST_7_DAYS("7 Hari Terakhir"),
-    THIS_MONTH("Bulan Ini"),
-    LAST_MONTH("Bulan Lalu"),
-    CUSTOM("Custom Tanggal")
-}
-
-class KasirViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val database = KasirDatabase.getInstance(application)
-    private val repository = KasirRepository(database.kasirDao())
-
-    val categories: StateFlow<List<CategoryEntity>> = repository.categories
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val products: StateFlow<List<ProductEntity>> = repository.products
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val customers: StateFlow<List<CustomerEntity>> = repository.customers
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val users: StateFlow<List<CashierUserEntity>> = repository.users
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val settings: StateFlow<StoreSettingsEntity> = repository.settings
-        .map { it ?: StoreSettingsEntity() }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StoreSettingsEntity())
-
-    val printers: StateFlow<List<PrinterDeviceEntity>> = repository.printers
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val transactionsWithItems: StateFlow<List<TransactionWithItems>> = repository.transactionsWithItems
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val unpaidBillings: StateFlow<List<TransactionWithItems>> = repository.unpaidBillingsWithItems
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    // --- NAVIGATION & SESSION STATE ---
+    // --- Navigation State ---
     private val _currentScreen = MutableStateFlow(AppScreen.DASHBOARD)
     val currentScreen: StateFlow<AppScreen> = _currentScreen.asStateFlow()
 
+    private val screenBackStack = ArrayDeque<AppScreen>()
+
+    fun navigateTo(screen: AppScreen) {
+        if (_currentScreen.value != screen) {
+            screenBackStack.addLast(_currentScreen.value)
+            _currentScreen.value = screen
+            if (screen == AppScreen.POS && _editingTransactionId.value == null) {
+                viewModelScope.launch {
+                    refreshNextBillingNumber()
+                }
+            }
+        }
+    }
+
+    fun navigateBack(): Boolean {
+        return if (screenBackStack.isNotEmpty()) {
+            _currentScreen.value = screenBackStack.removeLast()
+            if (_currentScreen.value == AppScreen.POS && _editingTransactionId.value == null) {
+                viewModelScope.launch {
+                    refreshNextBillingNumber()
+                }
+            }
+            true
+        } else if (_currentScreen.value != AppScreen.DASHBOARD) {
+            _currentScreen.value = AppScreen.DASHBOARD
+            true
+        } else {
+            false
+        }
+    }
+
+    // --- UI Feedback Events (Snackbar / Toast) ---
+    private val _uiMessage = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val uiMessage: SharedFlow<String> = _uiMessage.asSharedFlow()
+
+    fun emitMessage(msg: String) {
+        _uiMessage.tryEmit(msg)
+    }
+
+    // --- Database Streams ---
+    val categories: StateFlow<List<CategoryEntity>> = repository.allCategories
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val paymentMethods: StateFlow<List<PaymentMethodEntity>> = repository.allPaymentMethods
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val products: StateFlow<List<ProductEntity>> = repository.allProducts
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val customers: StateFlow<List<CustomerEntity>> = repository.allCustomers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allTransactions: StateFlow<List<TransactionWithItems>> = repository.allTransactionsWithItems
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val unpaidBillings: StateFlow<List<TransactionWithItems>> = repository.unpaidTransactionsWithItems
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val debtPayments: StateFlow<List<DebtPaymentEntity>> = repository.allDebtPayments
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val cashierUsers: StateFlow<List<CashierUserEntity>> = repository.allCashierUsers
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val storeSettings: StateFlow<StoreSettingsEntity> = repository.storeSettings
+        .combine(MutableStateFlow(StoreSettingsEntity())) { dbSettings, fallback ->
+            dbSettings ?: fallback
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StoreSettingsEntity())
+
+    // --- Active Cashier & PIN Lock ---
     private val _activeCashier = MutableStateFlow<CashierUserEntity?>(null)
     val activeCashier: StateFlow<CashierUserEntity?> = _activeCashier.asStateFlow()
 
     private val _isAppLocked = MutableStateFlow(false)
     val isAppLocked: StateFlow<Boolean> = _isAppLocked.asStateFlow()
 
-    private val _isAdminUnlocked = MutableStateFlow(false)
-    val isAdminUnlocked: StateFlow<Boolean> = _isAdminUnlocked.asStateFlow()
+    private var lockEvaluatedOnStartup = false
 
-    // --- SNACKBAR / STATUS FEEDBACK ---
-    private val _statusMessage = MutableStateFlow<String?>(null)
-    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
-
-    // --- PROSES PESAN (ACTIVE ORDER BILLING STATE) ---
-    private val _editingTransactionId = MutableStateFlow<Long?>(null)
-    val editingTransactionId: StateFlow<Long?> = _editingTransactionId.asStateFlow()
+    // --- Active Ordering Billing State (PROSES PESAN) ---
+    private val _cartItems = MutableStateFlow<List<CartItem>>(emptyList())
+    val cartItems: StateFlow<List<CartItem>> = _cartItems.asStateFlow()
 
     private val _activeBillingNumber = MutableStateFlow(1)
     val activeBillingNumber: StateFlow<Int> = _activeBillingNumber.asStateFlow()
 
-    private val _cartItems = MutableStateFlow<List<CartItem>>(emptyList())
-    val cartItems: StateFlow<List<CartItem>> = _cartItems.asStateFlow()
+    // If cashier selects an existing UNPAID billing to edit/add items before sending to kitchen again
+    private val _editingTransactionId = MutableStateFlow<Long?>(null)
+    val editingTransactionId: StateFlow<Long?> = _editingTransactionId.asStateFlow()
 
-    private val _selectedCustomer = MutableStateFlow<CustomerEntity?>(null)
-    val selectedCustomer: StateFlow<CustomerEntity?> = _selectedCustomer.asStateFlow()
+    private val _selectedOrderCustomer = MutableStateFlow<CustomerEntity?>(null)
+    val selectedOrderCustomer: StateFlow<CustomerEntity?> = _selectedOrderCustomer.asStateFlow()
 
-    private val _transactionNote = MutableStateFlow("")
-    val transactionNote: StateFlow<String> = _transactionNote.asStateFlow()
+    private val _orderNotes = MutableStateFlow("")
+    val orderNotes: StateFlow<String> = _orderNotes.asStateFlow()
 
+    // Kitchen ticket modal shown right after "KIRIM PESANAN"
     private val _lastSentKitchenOrder = MutableStateFlow<TransactionWithItems?>(null)
     val lastSentKitchenOrder: StateFlow<TransactionWithItems?> = _lastSentKitchenOrder.asStateFlow()
 
-    // --- PROSES BAYAR (SELECTED UNPAID BILLING STATE) ---
+    // --- Active Payment State (PROSES BAYAR) ---
     private val _selectedBillingForPayment = MutableStateFlow<TransactionWithItems?>(null)
     val selectedBillingForPayment: StateFlow<TransactionWithItems?> = _selectedBillingForPayment.asStateFlow()
 
-    private val _discountInput = MutableStateFlow(0.0)
-    val discountInput: StateFlow<Double> = _discountInput.asStateFlow()
-
-    private val _serviceFeeInput = MutableStateFlow(0.0)
-    val serviceFeeInput: StateFlow<Double> = _serviceFeeInput.asStateFlow()
-
-    private val _paymentMethod = MutableStateFlow("Tunai")
-    val paymentMethod: StateFlow<String> = _paymentMethod.asStateFlow()
-
-    private val _amountPaidInput = MutableStateFlow("")
-    val amountPaidInput: StateFlow<String> = _amountPaidInput.asStateFlow()
-
+    // Receipt modal shown right after "BAYAR & SELESAIKAN" or from History
     private val _lastCompletedTransaction = MutableStateFlow<TransactionWithItems?>(null)
     val lastCompletedTransaction: StateFlow<TransactionWithItems?> = _lastCompletedTransaction.asStateFlow()
 
     init {
         viewModelScope.launch {
-            users.collect { list ->
-                if (_activeCashier.value == null && list.isNotEmpty()) {
-                    _activeCashier.value = list.first()
+            repository.ensureInitialData()
+            refreshNextBillingNumber()
+        }
+        viewModelScope.launch {
+            cashierUsers.collect { users ->
+                if (_activeCashier.value == null && users.isNotEmpty()) {
+                    _activeCashier.value = users.firstOrNull { it.isActive } ?: users.first()
                 } else if (_activeCashier.value != null) {
-                    val updated = list.find { it.id == _activeCashier.value?.id }
-                    if (updated != null) _activeCashier.value = updated
+                    val refreshed = users.find { it.id == _activeCashier.value?.id }
+                    if (refreshed != null) _activeCashier.value = refreshed
                 }
             }
         }
         viewModelScope.launch {
-            transactionsWithItems.collect { allTx ->
+            storeSettings.collect { settings ->
+                if (!lockEvaluatedOnStartup && settings.storeName.isNotEmpty()) {
+                    lockEvaluatedOnStartup = true
+                    if (settings.requirePinOnStartup) {
+                        _isAppLocked.value = true
+                    }
+                }
                 if (_editingTransactionId.value == null) {
-                    val maxBilling = allTx.maxOfOrNull { it.transaction.billingNumber } ?: 0
-                    _activeBillingNumber.value = maxBilling + 1
-                } else {
-                    val existing = allTx.find { it.transaction.id == _editingTransactionId.value }
-                    if (existing != null && existing.transaction.status != "UNPAID") {
-                        startNewOrderBilling()
-                    }
-                }
-                val selectedPay = _selectedBillingForPayment.value
-                if (selectedPay != null) {
-                    val refreshed = allTx.find { it.transaction.id == selectedPay.transaction.id }
-                    if (refreshed == null || refreshed.transaction.status != "UNPAID") {
-                        _selectedBillingForPayment.value = null
-                    } else {
-                        _selectedBillingForPayment.value = refreshed
+                    val nextNum = repository.getNextBillingNumberForToday()
+                    if (nextNum > _activeBillingNumber.value || _activeBillingNumber.value < 1) {
+                        _activeBillingNumber.value = nextNum
                     }
                 }
             }
         }
         viewModelScope.launch {
-            settings.collect { s ->
-                _serviceFeeInput.value = s.defaultServiceFee
+            allTransactions.collect {
+                if (_editingTransactionId.value == null) {
+                    val nextNum = repository.getNextBillingNumberForToday()
+                    _activeBillingNumber.value = nextNum
+                }
+            }
+        }
+        viewModelScope.launch {
+            unpaidBillings.collect { list ->
+                val currentSel = _selectedBillingForPayment.value
+                if (currentSel != null) {
+                    val updated = list.find { it.transaction.id == currentSel.transaction.id }
+                    _selectedBillingForPayment.value = updated
+                }
             }
         }
     }
 
-    fun showMessage(msg: String) {
-        _statusMessage.value = msg
+    suspend fun refreshNextBillingNumber() {
+        val nextNum = repository.getNextBillingNumberForToday()
+        if (_editingTransactionId.value == null) {
+            _activeBillingNumber.value = nextNum
+        }
     }
 
-    fun clearMessage() {
-        _statusMessage.value = null
+    // --- PIN & Cashier Switching ---
+    fun unlockAppWithPin(pin: String): Boolean {
+        val hash = SecurityAndFormatUtils.hashPin(pin)
+        val matchedUser = cashierUsers.value.firstOrNull { it.isActive && it.pinHash == hash }
+        return if (matchedUser != null) {
+            _activeCashier.value = matchedUser
+            _isAppLocked.value = false
+            emitMessage("Selamat bertugas, ${matchedUser.name}")
+            true
+        } else {
+            emitMessage("PIN salah! Coba lagi (Default Admin: 1234)")
+            false
+        }
     }
 
-    fun navigateTo(screen: AppScreen) {
-        _currentScreen.value = screen
+    fun switchCashier(user: CashierUserEntity, pin: String): Boolean {
+        val hash = SecurityAndFormatUtils.hashPin(pin)
+        return if (user.pinHash == hash) {
+            _activeCashier.value = user
+            emitMessage("Kasir aktif: ${user.name} (${user.role})")
+            true
+        } else {
+            emitMessage("PIN untuk ${user.name} tidak sesuai")
+            false
+        }
     }
 
     fun lockApp() {
         _isAppLocked.value = true
-        _isAdminUnlocked.value = false
     }
 
-    fun unlockAppWithPin(pin: String, user: CashierUserEntity? = null): Boolean {
-        val targetUser = user ?: _activeCashier.value ?: users.value.firstOrNull()
-        val s = settings.value
-        val matchedUser = if (targetUser != null && SecurityAndFormatUtils.verifyPin(pin, targetUser.pinHash)) {
-            targetUser
-        } else {
-            users.value.firstOrNull { SecurityAndFormatUtils.verifyPin(pin, it.pinHash) }
+    // --- PAYMENT METHODS MANAGEMENT (NO ON/OFF SWITCHES; MANUAL ADD/EDIT/DELETE) ---
+    fun addPaymentMethod(name: String, isCashType: Boolean = false) {
+        val cleanName = name.trim().uppercase()
+        if (cleanName.isBlank()) {
+            emitMessage("Nama metode pembayaran tidak boleh kosong")
+            return
         }
-
-        return if (matchedUser != null || SecurityAndFormatUtils.verifyPin(pin, s.adminPinHash)) {
-            if (matchedUser != null) {
-                _activeCashier.value = matchedUser
-            }
-            _isAppLocked.value = false
-            true
-        } else {
-            false
+        if (paymentMethods.value.any { it.name.equals(cleanName, ignoreCase = true) }) {
+            emitMessage("Metode pembayaran \"$cleanName\" sudah ada")
+            return
+        }
+        viewModelScope.launch {
+            repository.addPaymentMethod(cleanName, isCashType)
+            emitMessage("Metode pembayaran \"$cleanName\" ditambahkan")
         }
     }
 
-    fun verifyAdminPin(pin: String): Boolean {
-        val s = settings.value
-        val adminMatch = SecurityAndFormatUtils.verifyPin(pin, s.adminPinHash) ||
-            users.value.any { it.role == "ADMIN" && SecurityAndFormatUtils.verifyPin(pin, it.pinHash) }
-        if (adminMatch) {
-            _isAdminUnlocked.value = true
+    fun updatePaymentMethod(method: PaymentMethodEntity, newName: String, isCashType: Boolean = method.isCashType) {
+        val cleanName = newName.trim().uppercase()
+        if (cleanName.isBlank()) {
+            emitMessage("Nama metode pembayaran tidak boleh kosong")
+            return
         }
-        return adminMatch
-    }
-
-    fun switchCashier(user: CashierUserEntity, pin: String): Boolean {
-        return if (SecurityAndFormatUtils.verifyPin(pin, user.pinHash)) {
-            _activeCashier.value = user
-            _isAdminUnlocked.value = (user.role == "ADMIN")
-            showMessage("Aktif sebagai kasir: ${user.name}")
-            true
-        } else {
-            showMessage("PIN Kasir salah!")
-            false
+        if (paymentMethods.value.any { it.id != method.id && it.name.equals(cleanName, ignoreCase = true) }) {
+            emitMessage("Metode pembayaran \"$cleanName\" sudah digunakan")
+            return
+        }
+        viewModelScope.launch {
+            repository.updatePaymentMethod(method, cleanName, isCashType)
+            emitMessage("Metode pembayaran diubah menjadi \"$cleanName\"")
         }
     }
 
-    // --- PROSES PESAN: ORDERING & ACTIVE BILLING OPERATIONS ---
-    fun startNewOrderBilling() {
-        val maxBilling = transactionsWithItems.value.maxOfOrNull { it.transaction.billingNumber } ?: 0
-        _editingTransactionId.value = null
-        _activeBillingNumber.value = maxBilling + 1
-        _cartItems.value = emptyList()
-        _selectedCustomer.value = null
-        _transactionNote.value = ""
-    }
-
-    fun loadUnpaidBillingIntoPos(txWithItems: TransactionWithItems) {
-        val tx = txWithItems.transaction
-        val allProds = products.value.associateBy { it.id }
-        val loadedCart = txWithItems.items.map { item ->
-            val prod = allProds[item.productId] ?: ProductEntity(
-                id = item.productId,
-                name = item.productName,
-                buyPrice = item.buyPrice,
-                sellPrice = item.sellPrice,
-                unit = item.unit,
-                categoryName = item.categoryName
-            )
-            CartItem(
-                product = prod,
-                quantity = item.quantity,
-                portionNotes = item.portionNotes
-            )
+    fun deletePaymentMethod(method: PaymentMethodEntity) {
+        if (paymentMethods.value.size <= 1) {
+            emitMessage("Minimal harus ada 1 metode pembayaran yang tersimpan")
+            return
         }
-        _editingTransactionId.value = tx.id
-        _activeBillingNumber.value = tx.billingNumber
-        _cartItems.value = loadedCart
-        _selectedCustomer.value = customers.value.find { it.id == tx.customerId }
-        _transactionNote.value = tx.notes
-        _currentScreen.value = AppScreen.POS
-        showMessage("Memuat ${tx.billingDisplay} untuk tambah/ubah pesanan.")
+        viewModelScope.launch {
+            repository.deletePaymentMethod(method)
+            emitMessage("Metode \"${method.name}\" dihapus (riwayat transaksi lama tetap aman)")
+        }
     }
 
-    fun addProductToCart(product: ProductEntity) {
+    // --- PROSES PESAN (CART & BILLING CREATION) ---
+    fun addToCart(product: ProductEntity) {
         if (!product.isActive) {
-            showMessage("Menu '${product.name}' sedang dinonaktifkan.")
+            emitMessage("Menu ${product.name} sedang nonaktif")
             return
         }
         val currentList = _cartItems.value.toMutableList()
-        val index = currentList.indexOfFirst { it.product.id == product.id }
-        if (index >= 0) {
-            val existing = currentList[index]
-            val nextQty = existing.quantity + 1
-            val updatedNotes = SecurityAndFormatUtils.normalizePortionNotes(existing.portionNotes, nextQty)
-            currentList[index] = existing.copy(
-                product = product,
-                quantity = nextQty,
+        val existingIndex = currentList.indexOfFirst { it.product.id == product.id }
+
+        if (existingIndex >= 0) {
+            val existing = currentList[existingIndex]
+            val newQty = existing.quantity + 1
+            val updatedNotes = SecurityAndFormatUtils.normalizePortionNotes(existing.portionNotes, newQty)
+            currentList[existingIndex] = existing.copy(
+                quantity = newQty,
                 portionNotes = updatedNotes
             )
         } else {
@@ -306,17 +326,15 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateCartItemQuantity(productId: Long, newQuantity: Int) {
         if (newQuantity <= 0) {
-            removeCartItem(productId)
+            removeFromCart(productId)
             return
         }
         val currentList = _cartItems.value.toMutableList()
         val index = currentList.indexOfFirst { it.product.id == productId }
         if (index >= 0) {
             val item = currentList[index]
-            val latestProduct = products.value.find { it.id == productId } ?: item.product
             val updatedNotes = SecurityAndFormatUtils.normalizePortionNotes(item.portionNotes, newQuantity)
             currentList[index] = item.copy(
-                product = latestProduct,
                 quantity = newQuantity,
                 portionNotes = updatedNotes
             )
@@ -329,508 +347,731 @@ class KasirViewModel(application: Application) : AndroidViewModel(application) {
         val index = currentList.indexOfFirst { it.product.id == productId }
         if (index >= 0) {
             val item = currentList[index]
-            currentList[index] = item.copy(
-                portionNotes = SecurityAndFormatUtils.normalizePortionNotes(portionNotes, item.quantity)
-            )
+            val normalized = SecurityAndFormatUtils.normalizePortionNotes(portionNotes, item.quantity)
+            currentList[index] = item.copy(portionNotes = normalized)
             _cartItems.value = currentList
         }
     }
 
-    fun removeCartItem(productId: Long) {
+    fun updateCartItemSinglePortionNote(productId: Long, portionIndex: Int, note: String) {
+        val currentList = _cartItems.value.toMutableList()
+        val index = currentList.indexOfFirst { it.product.id == productId }
+        if (index >= 0) {
+            val item = currentList[index]
+            val mutableNotes = SecurityAndFormatUtils.normalizePortionNotes(item.portionNotes, item.quantity).toMutableList()
+            if (portionIndex in mutableNotes.indices) {
+                mutableNotes[portionIndex] = note.trim()
+                currentList[index] = item.copy(portionNotes = mutableNotes)
+                _cartItems.value = currentList
+            }
+        }
+    }
+
+    fun removeFromCart(productId: Long) {
         _cartItems.value = _cartItems.value.filterNot { it.product.id == productId }
     }
 
-    fun clearCart() {
-        startNewOrderBilling()
+    fun clearOrderDraft() {
+        _cartItems.value = emptyList()
+        _editingTransactionId.value = null
+        _selectedOrderCustomer.value = null
+        _orderNotes.value = ""
+        viewModelScope.launch {
+            refreshNextBillingNumber()
+        }
     }
 
-    fun setCustomer(customer: CustomerEntity?) {
-        _selectedCustomer.value = customer
+    fun startNewBilling() {
+        _cartItems.value = emptyList()
+        _editingTransactionId.value = null
+        _selectedOrderCustomer.value = null
+        _orderNotes.value = ""
+        viewModelScope.launch {
+            val nextNum = repository.getNextBillingNumberForToday()
+            _activeBillingNumber.value = nextNum
+            emitMessage("Siap membuat Billing $nextNum")
+        }
     }
 
-    fun setTransactionNote(note: String) {
-        _transactionNote.value = note
+    fun loadUnpaidBillingToEdit(txWithItems: TransactionWithItems) {
+        val tx = txWithItems.transaction
+        val allProds = products.value
+        val reconstructedCart = txWithItems.items.map { item ->
+            val matchedProd = allProds.find { it.id == item.productId } ?: ProductEntity(
+                id = item.productId,
+                name = item.productName,
+                sellPrice = item.sellPrice,
+                unit = item.unit,
+                categoryId = 1,
+                categoryName = "Menu"
+            )
+            CartItem(
+                product = matchedProd,
+                quantity = item.quantity,
+                portionNotes = item.portionNotes
+            )
+        }
+        _editingTransactionId.value = tx.id
+        _activeBillingNumber.value = tx.billingNumber
+        _cartItems.value = reconstructedCart
+        _orderNotes.value = tx.notes
+        _selectedOrderCustomer.value = customers.value.find { it.id == tx.customerId }
+        _currentScreen.value = AppScreen.POS
+        emitMessage("Mengubah ${tx.billingDisplay}")
     }
 
-    fun dismissLastSentKitchenOrder() {
+    fun setOrderCustomer(customer: CustomerEntity?) {
+        _selectedOrderCustomer.value = customer
+    }
+
+    fun setOrderNotes(notes: String) {
+        _orderNotes.value = notes
+    }
+
+    // --- KIRIM PESANAN KE DAPUR (SAVES AS UNPAID, DOES NOT OPEN PAYMENT) ---
+    fun sendOrderToKitchen(context: Context) {
+        val items = _cartItems.value
+        if (items.isEmpty()) {
+            emitMessage("Pilih makanan atau minuman terlebih dahulu")
+            return
+        }
+
+        viewModelScope.launch {
+            val settings = storeSettings.value
+            val cashier = _activeCashier.value
+            val customer = _selectedOrderCustomer.value
+            val now = System.currentTimeMillis()
+            val todayKey = SecurityAndFormatUtils.formatDateKey(now)
+            val subtotal = items.sumOf { it.subtotal }
+
+            val editingId = _editingTransactionId.value
+            val existingUnpaid = if (editingId != null) {
+                unpaidBillings.value.find { it.transaction.id == editingId }?.transaction
+            } else null
+
+            val requestedBillingNum = if (existingUnpaid != null) {
+                existingUnpaid.billingNumber
+            } else {
+                maxOf(_activeBillingNumber.value, repository.getNextBillingNumberForToday(now))
+            }
+
+            val invoiceNumber = existingUnpaid?.invoiceNumber
+                ?: SecurityAndFormatUtils.generateInvoiceNumber(settings.invoicePrefix, requestedBillingNum, now)
+
+            val txEntities = items.map { cartItem ->
+                TransactionItemEntity(
+                    transactionId = editingId ?: 0L,
+                    productId = cartItem.product.id,
+                    productName = cartItem.product.name,
+                    sku = cartItem.product.sku,
+                    unit = cartItem.product.unit,
+                    costPrice = 0.0,
+                    sellPrice = cartItem.product.sellPrice,
+                    quantity = cartItem.quantity,
+                    itemNote = cartItem.encodedItemNote,
+                    subtotal = cartItem.subtotal
+                )
+            }
+
+            val resultTxWithItems = if (existingUnpaid != null) {
+                val updatedTx = existingUnpaid.copy(
+                    customerId = customer?.id ?: existingUnpaid.customerId,
+                    customerName = customer?.name ?: existingUnpaid.customerName,
+                    subtotal = subtotal,
+                    totalAmount = (subtotal - existingUnpaid.discountAmount + existingUnpaid.taxAmount + existingUnpaid.serviceFee).coerceAtLeast(0.0),
+                    notes = _orderNotes.value.trim(),
+                    status = "UNPAID"
+                )
+                repository.updateKitchenOrderBilling(updatedTx, txEntities)
+            } else {
+                val newTx = TransactionEntity(
+                    invoiceNumber = invoiceNumber,
+                    billingNumber = requestedBillingNum,
+                    billingDate = todayKey,
+                    timestamp = now,
+                    cashierId = cashier?.id ?: 1L,
+                    cashierName = cashier?.name ?: "Admin",
+                    customerId = customer?.id,
+                    customerName = customer?.name ?: "Pelanggan Umum",
+                    subtotal = subtotal,
+                    totalAmount = subtotal,
+                    paymentMethodId = null,
+                    paymentMethod = "BELUM BAYAR",
+                    amountPaid = 0.0,
+                    changeAmount = 0.0,
+                    notes = _orderNotes.value.trim(),
+                    status = "UNPAID"
+                )
+                repository.createKitchenOrderBilling(newTx, txEntities)
+            }
+
+            _lastSentKitchenOrder.value = resultTxWithItems
+
+            // Reset order draft and advance strictly to next daily sequential billing number
+            _cartItems.value = emptyList()
+            _editingTransactionId.value = null
+            _selectedOrderCustomer.value = null
+            _orderNotes.value = ""
+
+            val nextNumAfterSend = maxOf(
+                resultTxWithItems.transaction.billingNumber + 1,
+                repository.getNextBillingNumberForToday()
+            )
+            _activeBillingNumber.value = nextNumAfterSend
+
+            emitMessage("${resultTxWithItems.transaction.billingDisplay} dikirim ke dapur (BELUM BAYAR)")
+
+            if (settings.autoPrintKitchenTicket && settings.defaultPrinterAddress.isNotBlank()) {
+                BluetoothPrinterService.printKitchenTicketToBluetooth(
+                    context = context,
+                    txWithItems = resultTxWithItems,
+                    settings = settings
+                ).onSuccess { msg ->
+                    emitMessage(msg)
+                }.onFailure { err ->
+                    emitMessage("Auto-print dapur gagal: ${err.message}")
+                }
+            }
+        }
+    }
+
+    fun dismissKitchenOrderModal() {
         _lastSentKitchenOrder.value = null
     }
 
-    fun sendOrderToKitchen(context: Context, onOrderSent: (TransactionWithItems) -> Unit = {}) {
+    // --- PROSES BAYAR (SELECT BILLING & COMPLETE PAYMENT) ---
+    fun selectBillingForPayment(txWithItems: TransactionWithItems?) {
+        _selectedBillingForPayment.value = txWithItems
+    }
+
+    fun openBillingInPaymentScreen(txWithItems: TransactionWithItems) {
+        _selectedBillingForPayment.value = txWithItems
+        navigateTo(AppScreen.PAYMENT)
+    }
+
+    fun payBilling(
+        context: Context,
+        txWithItems: TransactionWithItems,
+        paymentMethod: String,
+        paymentMethodId: Long? = null,
+        amountPaidInput: Double,
+        discountType: String = "NOMINAL",
+        discountInput: Double = 0.0,
+        enableTax: Boolean = false,
+        taxPercent: Double = 0.0,
+        serviceFee: Double = 0.0,
+        notes: String = ""
+    ) {
+        val tx = txWithItems.transaction
+        val subtotal = txWithItems.items.sumOf { it.subtotal }
+        val discountAmount = if (discountType == "PERCENT") {
+            subtotal * (discountInput.coerceIn(0.0, 100.0) / 100.0)
+        } else {
+            discountInput.coerceIn(0.0, subtotal)
+        }
+        val afterDiscount = (subtotal - discountAmount).coerceAtLeast(0.0)
+        val effectiveTaxPct = if (enableTax) taxPercent.coerceAtLeast(0.0) else 0.0
+        val taxAmount = afterDiscount * (effectiveTaxPct / 100.0)
+        val rawTotal = afterDiscount + taxAmount + serviceFee.coerceAtLeast(0.0)
+
+        val settings = storeSettings.value
+        val finalTotal = if (settings.enableRounding && settings.roundingMultiple > 1) {
+            SecurityAndFormatUtils.roundToNearestMultiple(rawTotal, settings.roundingMultiple)
+        } else {
+            rawTotal
+        }
+        val roundingDiff = finalTotal - rawTotal
+
+        val cleanMethodName = paymentMethod.trim().uppercase().ifBlank { "TUNAI" }
+        val matchedMethodEntity = paymentMethods.value.find {
+            (paymentMethodId != null && it.id == paymentMethodId) ||
+                it.name.equals(cleanMethodName, ignoreCase = true)
+        }
+        val isCashMethod = matchedMethodEntity?.requiresCashInput
+            ?: (cleanMethodName == "TUNAI" || cleanMethodName == "CASH")
+
+        val actualPaid = if (isCashMethod) amountPaidInput else finalTotal
+        if (isCashMethod && actualPaid < finalTotal) {
+            emitMessage("Uang pelanggan kurang dari total bayar (${SecurityAndFormatUtils.formatRupiah(finalTotal)})")
+            return
+        }
+        val change = (actualPaid - finalTotal).coerceAtLeast(0.0)
+
         viewModelScope.launch {
-            val cashier = _activeCashier.value ?: CashierUserEntity(id = 1, name = "Admin Resto")
-            val result = repository.sendOrderToKitchen(
-                existingTransactionId = _editingTransactionId.value,
-                billingNumber = _activeBillingNumber.value,
-                cartItems = _cartItems.value,
-                cashier = cashier,
-                customer = _selectedCustomer.value,
-                notes = _transactionNote.value
+            val cashier = _activeCashier.value
+            val preservedBillingDate = tx.billingDate.ifBlank {
+                SecurityAndFormatUtils.formatDateKey(tx.timestamp)
+            }
+            val updatedTx = tx.copy(
+                subtotal = subtotal,
+                discountAmount = discountAmount,
+                discountType = discountType,
+                discountInput = discountInput,
+                taxPercentage = effectiveTaxPct,
+                taxAmount = taxAmount,
+                serviceFee = serviceFee,
+                roundingAmount = roundingDiff,
+                totalAmount = finalTotal,
+                paymentMethodId = matchedMethodEntity?.id ?: paymentMethodId,
+                paymentMethod = cleanMethodName,
+                amountPaid = actualPaid,
+                changeAmount = change,
+                notes = notes.trim().ifBlank { tx.notes },
+                status = "PAID",
+                billingDate = preservedBillingDate,
+                cashierId = cashier?.id ?: tx.cashierId,
+                cashierName = cashier?.name ?: tx.cashierName,
+                timestamp = System.currentTimeMillis()
             )
 
-            result.onSuccess { savedOrder ->
-                _lastSentKitchenOrder.value = savedOrder
-                startNewOrderBilling()
-                showMessage("${savedOrder.transaction.billingDisplay} dikirim ke dapur (Status: BELUM BAYAR).")
-                onOrderSent(savedOrder)
+            val paidTxWithItems = repository.completeBillingPayment(updatedTx)
+            _selectedBillingForPayment.value = null
+            _lastCompletedTransaction.value = paidTxWithItems
 
-                val s = settings.value
-                if (s.autoPrintKitchenTicket && s.defaultPrinterAddress.isNotBlank()) {
-                    printKitchenTicketBluetooth(context, savedOrder)
+            if (_editingTransactionId.value == tx.id) {
+                _editingTransactionId.value = null
+                _cartItems.value = emptyList()
+            }
+            // Refresh next billing number so it stays sequential and never resets to Billing 1 on the same day
+            refreshNextBillingNumber()
+
+            emitMessage("${tx.billingDisplay} LUNAS (${cleanMethodName}: ${SecurityAndFormatUtils.formatRupiah(finalTotal)})")
+
+            if (settings.autoPrintReceipt && settings.defaultPrinterAddress.isNotBlank()) {
+                BluetoothPrinterService.printReceiptToBluetooth(
+                    context = context,
+                    txWithItems = paidTxWithItems,
+                    settings = settings
+                ).onSuccess { msg ->
+                    emitMessage(msg)
+                }.onFailure { err ->
+                    emitMessage("Auto-print struk gagal: ${err.message}")
                 }
-            }.onFailure { err ->
-                showMessage(err.message ?: "Gagal menyimpan pesanan.")
             }
         }
     }
 
-    // --- PROSES BAYAR: PAYMENT OF UNPAID BILLINGS ---
-    fun selectBillingForPayment(txWithItems: TransactionWithItems?) {
-        _selectedBillingForPayment.value = txWithItems
-        _discountInput.value = txWithItems?.transaction?.discountAmount ?: 0.0
-        _serviceFeeInput.value = txWithItems?.transaction?.serviceFee ?: settings.value.defaultServiceFee
-        _paymentMethod.value = "Tunai"
-        _amountPaidInput.value = ""
-    }
-
-    fun setDiscount(discount: Double) {
-        _discountInput.value = discount.coerceAtLeast(0.0)
-    }
-
-    fun setServiceFee(fee: Double) {
-        _serviceFeeInput.value = fee.coerceAtLeast(0.0)
-    }
-
-    fun setPaymentMethod(method: String) {
-        _paymentMethod.value = method
-    }
-
-    fun setAmountPaidInput(input: String) {
-        _amountPaidInput.value = input
-    }
-
-    fun dismissLastCompletedTransaction() {
+    fun dismissCompletedTransactionModal() {
         _lastCompletedTransaction.value = null
     }
 
-    fun calculateBillingPaymentTotals(billing: TransactionWithItems?): PaymentCalculation {
-        val items = billing?.items ?: emptyList()
-        val s = settings.value
-        val subtotal = items.sumOf { it.subtotal }
-        val discount = if (s.enableDiscount) _discountInput.value.coerceIn(0.0, subtotal) else 0.0
-        val afterDiscount = (subtotal - discount).coerceAtLeast(0.0)
-        val taxPercent = if (s.enableTax) s.defaultTaxPercent.coerceAtLeast(0.0) else 0.0
-        val taxAmount = afterDiscount * (taxPercent / 100.0)
-        val serviceFee = _serviceFeeInput.value.coerceAtLeast(0.0)
-        val rawTotal = afterDiscount + taxAmount + serviceFee
-        val rounding = if (s.enableRounding) {
-            val rem = rawTotal % 100.0
-            if (rem == 0.0) 0.0 else if (rem >= 50.0) 100.0 - rem else -rem
-        } else 0.0
-        val finalTotal = (rawTotal + rounding).coerceAtLeast(0.0)
+    fun showTransactionReceiptModal(txWithItems: TransactionWithItems) {
+        _lastCompletedTransaction.value = txWithItems
+    }
 
-        val isTunai = _paymentMethod.value.equals("Tunai", ignoreCase = true)
-        val paidVal = if (isTunai) {
-            _amountPaidInput.value.replace(Regex("[^0-9.]"), "").toDoubleOrNull() ?: 0.0
-        } else {
-            finalTotal
+    fun showKitchenTicketModal(txWithItems: TransactionWithItems) {
+        _lastSentKitchenOrder.value = txWithItems
+    }
+
+    // --- Printing & PDF Sharing Actions ---
+    fun printReceiptViaBluetooth(
+        context: Context,
+        txWithItems: TransactionWithItems,
+        printerAddressOverride: String? = null
+    ) {
+        viewModelScope.launch {
+            val result = BluetoothPrinterService.printReceiptToBluetooth(
+                context = context,
+                txWithItems = txWithItems,
+                settings = storeSettings.value,
+                printerAddressOverride = printerAddressOverride
+            )
+            result.onSuccess { emitMessage(it) }
+                .onFailure { emitMessage("Gagal cetak Bluetooth: ${it.message}") }
         }
-        val change = (paidVal - finalTotal).coerceAtLeast(0.0)
-        val shortage = (finalTotal - paidVal).coerceAtLeast(0.0)
+    }
 
-        return PaymentCalculation(
-            subtotal = subtotal,
-            discountAmount = discount,
-            taxPercent = taxPercent,
-            taxAmount = taxAmount,
-            serviceFee = serviceFee,
-            roundingAmount = rounding,
-            finalTotal = finalTotal,
-            amountPaid = paidVal,
-            changeAmount = change,
-            shortageAmount = shortage,
-            isSufficient = !isTunai || paidVal >= finalTotal
+    fun printKitchenTicketViaBluetooth(
+        context: Context,
+        txWithItems: TransactionWithItems,
+        printerAddressOverride: String? = null
+    ) {
+        viewModelScope.launch {
+            val result = BluetoothPrinterService.printKitchenTicketToBluetooth(
+                context = context,
+                txWithItems = txWithItems,
+                settings = storeSettings.value,
+                printerAddressOverride = printerAddressOverride
+            )
+            result.onSuccess { emitMessage(it) }
+                .onFailure { emitMessage("Gagal cetak tiket dapur: ${it.message}") }
+        }
+    }
+
+    fun shareReceiptAsText(context: Context, txWithItems: TransactionWithItems) {
+        val text = BluetoothPrinterService.formatReceiptText(txWithItems, storeSettings.value)
+        BackupAndExportService.shareReceiptText(
+            context = context,
+            title = "Struk ${txWithItems.transaction.billingDisplay}",
+            receiptText = text
         )
     }
 
-    fun completeSelectedBillingPayment(context: Context, onSuccess: (TransactionWithItems) -> Unit = {}) {
-        val targetBilling = _selectedBillingForPayment.value
-        if (targetBilling == null) {
-            showMessage("Pilih Billing yang ingin dibayar terlebih dahulu.")
-            return
-        }
+    fun shareKitchenTicketAsText(context: Context, txWithItems: TransactionWithItems) {
+        val text = BluetoothPrinterService.formatKitchenTicketText(
+            txWithItems,
+            storeSettings.value.paperSizeMm
+        )
+        BackupAndExportService.shareReceiptText(
+            context = context,
+            title = "Pesanan Dapur ${txWithItems.transaction.billingDisplay}",
+            receiptText = text
+        )
+    }
+
+    fun shareReceiptAsPdf(context: Context, txWithItems: TransactionWithItems) {
         viewModelScope.launch {
-            val calc = calculateBillingPaymentTotals(targetBilling)
-            val cashier = _activeCashier.value ?: CashierUserEntity(id = 1, name = "Admin Resto")
-            val result = repository.processBillingPayment(
-                transactionId = targetBilling.transaction.id,
-                cashier = cashier,
-                discountAmount = calc.discountAmount,
-                serviceFee = calc.serviceFee,
-                paymentMethod = _paymentMethod.value,
-                amountPaid = calc.amountPaid
-            )
-
-            result.onSuccess { paidTx ->
-                _selectedBillingForPayment.value = null
-                _lastCompletedTransaction.value = paidTx
-                _amountPaidInput.value = ""
-                _discountInput.value = 0.0
-                showMessage("${paidTx.transaction.billingDisplay} LUNAS!")
-                onSuccess(paidTx)
-
-                val s = settings.value
-                if (s.autoPrintReceipt && s.defaultPrinterAddress.isNotBlank()) {
-                    printReceiptBluetooth(context, paidTx)
-                }
-            }.onFailure { err ->
-                showMessage(err.message ?: "Gagal menyelesaikan pembayaran.")
+            runCatching {
+                val pdfFile = BackupAndExportService.generateReceiptPdfFile(
+                    context = context,
+                    txWithItems = txWithItems,
+                    settings = storeSettings.value
+                )
+                BackupAndExportService.shareFile(
+                    context = context,
+                    file = pdfFile,
+                    mimeType = "application/pdf",
+                    chooserTitle = "Bagikan Struk PDF"
+                )
+            }.onFailure {
+                emitMessage("Gagal membuat PDF struk: ${it.message}")
             }
         }
     }
 
-    // --- PRODUCT, CATEGORY, CUSTOMER, USER CRUD ---
-    fun saveCategory(category: CategoryEntity, onSuccess: () -> Unit = {}) {
+    fun saveReceiptPdfToUri(context: Context, uri: Uri, txWithItems: TransactionWithItems) {
         viewModelScope.launch {
-            repository.saveCategory(category)
-                .onSuccess {
-                    showMessage("Kategori '${category.name}' berhasil disimpan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan kategori.") }
+            val res = BackupAndExportService.saveReceiptPdfToUri(
+                context = context,
+                uri = uri,
+                txWithItems = txWithItems,
+                settings = storeSettings.value
+            )
+            res.onSuccess { emitMessage(it) }
+                .onFailure { emitMessage("Gagal simpan PDF: ${it.message}") }
         }
     }
 
-    fun moveProductsBetweenCategories(
-        fromCategory: CategoryEntity,
-        toCategory: CategoryEntity,
-        onSuccess: () -> Unit = {}
+    // --- Cancel Billing / Transaction ---
+    fun cancelTransaction(txWithItems: TransactionWithItems, reason: String) {
+        val cashier = _activeCashier.value
+        if (cashier != null && !cashier.canCancelTransaction && cashier.role != "ADMIN") {
+            emitMessage("Kasir ${cashier.name} tidak memiliki izin membatalkan transaksi")
+            return
+        }
+        viewModelScope.launch {
+            repository.cancelTransaction(
+                txWithItems = txWithItems,
+                reason = reason.ifBlank { "Dibatalkan oleh kasir" }
+            )
+            if (_selectedBillingForPayment.value?.transaction?.id == txWithItems.transaction.id) {
+                _selectedBillingForPayment.value = null
+            }
+            refreshNextBillingNumber()
+            emitMessage("${txWithItems.transaction.billingDisplay} berhasil dibatalkan")
+        }
+    }
+
+    // --- Products (Menu Management - NO COST PRICE) ---
+    fun saveProduct(
+        id: Long = 0L,
+        name: String,
+        sellPrice: Double,
+        unit: String,
+        categoryId: Long,
+        categoryName: String,
+        description: String,
+        imageUri: String,
+        isActive: Boolean
     ) {
-        viewModelScope.launch {
-            repository.moveProductsBetweenCategories(fromCategory.id, toCategory)
-                .onSuccess {
-                    showMessage("Semua menu dari '${fromCategory.name}' dipindahkan ke '${toCategory.name}'.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal memindahkan menu.") }
+        if (name.isBlank()) {
+            emitMessage("Nama menu wajib diisi")
+            return
         }
-    }
-
-    fun deleteCategory(
-        category: CategoryEntity,
-        moveToCategory: CategoryEntity? = null,
-        onSuccess: () -> Unit = {}
-    ) {
         viewModelScope.launch {
-            repository.deleteCategoryWithOptionalMove(category, moveToCategory)
-                .onSuccess {
-                    showMessage("Kategori '${category.name}' berhasil dihapus.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal menghapus kategori.") }
-        }
-    }
-
-    fun saveProduct(product: ProductEntity, onSuccess: () -> Unit = {}) {
-        viewModelScope.launch {
+            val product = ProductEntity(
+                id = id,
+                name = name.trim(),
+                costPrice = 0.0,
+                sellPrice = sellPrice.coerceAtLeast(0.0),
+                unit = unit.trim().ifBlank { "Porsi" },
+                categoryId = categoryId,
+                categoryName = categoryName.ifBlank { "Makanan" },
+                description = description.trim(),
+                imageUri = imageUri,
+                isActive = isActive
+            )
             repository.saveProduct(product)
-                .onSuccess {
-                    showMessage("Menu '${product.name}' berhasil disimpan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan menu.") }
-        }
-    }
-
-    fun moveSingleProductCategory(product: ProductEntity, targetCategory: CategoryEntity) {
-        viewModelScope.launch {
-            repository.moveSingleProductToCategory(product, targetCategory)
-                .onSuccess {
-                    showMessage("'${product.name}' dipindahkan ke kategori '${targetCategory.name}'.")
-                }
-                .onFailure { showMessage(it.message ?: "Gagal memindahkan kategori menu.") }
+            emitMessage(if (id == 0L) "Menu ditambahkan" else "Menu diperbarui")
         }
     }
 
     fun deleteProduct(product: ProductEntity) {
         viewModelScope.launch {
             repository.deleteProduct(product)
-                .onSuccess { showMessage("Menu '${product.name}' telah dihapus.") }
-                .onFailure { showMessage(it.message ?: "Gagal menghapus menu.") }
+            _cartItems.value = _cartItems.value.filterNot { it.product.id == product.id }
+            emitMessage("Menu ${product.name} dihapus")
         }
     }
 
-    fun saveCustomer(customer: CustomerEntity, onSuccess: () -> Unit = {}) {
+    // --- Categories (With Menu Count Check & Reassignment) ---
+    fun saveCategory(
+        id: Long = 0L,
+        name: String,
+        description: String,
+        colorHex: String,
+        iconName: String
+    ) {
+        if (name.isBlank()) {
+            emitMessage("Nama kategori tidak boleh kosong")
+            return
+        }
         viewModelScope.launch {
-            repository.saveCustomer(customer)
-                .onSuccess {
-                    showMessage("Pelanggan '${customer.name}' berhasil disimpan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan pelanggan.") }
+            repository.saveCategory(
+                CategoryEntity(
+                    id = id,
+                    name = name.trim(),
+                    description = description.trim(),
+                    colorHex = colorHex,
+                    iconName = iconName
+                )
+            )
+            emitMessage(if (id == 0L) "Kategori ditambahkan" else "Kategori diperbarui")
+        }
+    }
+
+    fun deleteCategory(
+        category: CategoryEntity,
+        reassignToCategory: CategoryEntity? = null
+    ) {
+        viewModelScope.launch {
+            repository.deleteCategoryWithReassignment(category, reassignToCategory)
+            if (reassignToCategory != null) {
+                emitMessage("Kategori ${category.name} dihapus & menu dipindahkan ke ${reassignToCategory.name}")
+            } else {
+                emitMessage("Kategori ${category.name} dihapus")
+            }
+        }
+    }
+
+    fun moveCategoryProducts(fromCategory: CategoryEntity, toCategory: CategoryEntity) {
+        viewModelScope.launch {
+            repository.reassignProductsCategory(fromCategory.id, toCategory.id, toCategory.name)
+            emitMessage("Semua menu dari '${fromCategory.name}' dipindahkan ke '${toCategory.name}'")
+        }
+    }
+
+    // --- Customers & Debt ---
+    fun saveCustomer(
+        id: Long = 0L,
+        name: String,
+        phone: String,
+        address: String,
+        notes: String,
+        existingDebt: Double = 0.0
+    ) {
+        if (name.isBlank()) {
+            emitMessage("Nama pelanggan wajib diisi")
+            return
+        }
+        viewModelScope.launch {
+            repository.saveCustomer(
+                CustomerEntity(
+                    id = id,
+                    name = name.trim(),
+                    phone = phone.trim(),
+                    address = address.trim(),
+                    notes = notes.trim(),
+                    totalDebt = existingDebt
+                )
+            )
+            emitMessage(if (id == 0L) "Pelanggan ditambahkan" else "Data pelanggan diperbarui")
         }
     }
 
     fun deleteCustomer(customer: CustomerEntity) {
         viewModelScope.launch {
             repository.deleteCustomer(customer)
-                .onSuccess { showMessage("Data pelanggan '${customer.name}' dihapus.") }
-                .onFailure { showMessage(it.message ?: "Gagal menghapus pelanggan.") }
+            if (_selectedOrderCustomer.value?.id == customer.id) {
+                _selectedOrderCustomer.value = null
+            }
+            emitMessage("Pelanggan ${customer.name} dihapus")
         }
     }
 
-    fun saveCashierUser(user: CashierUserEntity, rawPin: String?, onSuccess: () -> Unit = {}) {
+    fun payCustomerDebt(
+        customer: CustomerEntity,
+        amount: Double,
+        paymentMethod: String,
+        notes: String
+    ) {
+        if (amount <= 0) {
+            emitMessage("Nominal pembayaran harus lebih dari 0")
+            return
+        }
         viewModelScope.launch {
-            repository.saveUser(user, rawPin)
-                .onSuccess {
-                    showMessage("Data kasir '${user.name}' berhasil disimpan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan data kasir.") }
+            val cashierName = _activeCashier.value?.name ?: "Admin"
+            repository.recordDebtPayment(
+                customer = customer,
+                amount = amount.coerceAtMost(customer.totalDebt),
+                paymentMethod = paymentMethod,
+                notes = notes.trim(),
+                cashierName = cashierName
+            )
+            emitMessage("Pembayaran piutang ${SecurityAndFormatUtils.formatRupiah(amount)} berhasil dicatat")
+        }
+    }
+
+    // --- Settings & Users ---
+    fun updateStoreSettings(updated: StoreSettingsEntity) {
+        viewModelScope.launch {
+            repository.saveStoreSettings(updated)
+            emitMessage("Pengaturan berhasil disimpan")
+        }
+    }
+
+    fun saveCashierUser(
+        id: Long = 0L,
+        name: String,
+        role: String,
+        rawPin: String,
+        existingPinHash: String = "",
+        canEditPrice: Boolean = true,
+        canGiveDiscount: Boolean = true,
+        canCancelTransaction: Boolean = true,
+        canViewReports: Boolean = true
+    ) {
+        if (name.isBlank()) {
+            emitMessage("Nama pengguna wajib diisi")
+            return
+        }
+        val finalHash = if (rawPin.isNotBlank()) {
+            SecurityAndFormatUtils.hashPin(rawPin)
+        } else if (existingPinHash.isNotBlank()) {
+            existingPinHash
+        } else {
+            SecurityAndFormatUtils.hashPin("1234")
+        }
+
+        viewModelScope.launch {
+            repository.saveCashierUser(
+                CashierUserEntity(
+                    id = id,
+                    name = name.trim(),
+                    role = role,
+                    pinHash = finalHash,
+                    isActive = true,
+                    canEditPrice = canEditPrice,
+                    canGiveDiscount = canGiveDiscount,
+                    canCancelTransaction = canCancelTransaction,
+                    canViewReports = canViewReports,
+                    canManageStock = false
+                )
+            )
+            emitMessage("Data kasir/admin disimpan")
         }
     }
 
     fun deleteCashierUser(user: CashierUserEntity) {
+        if (cashierUsers.value.size <= 1) {
+            emitMessage("Tidak dapat menghapus satu-satunya akun pengguna")
+            return
+        }
         viewModelScope.launch {
-            repository.deleteUser(user)
-                .onSuccess { showMessage("Kasir '${user.name}' dihapus.") }
-                .onFailure { showMessage(it.message ?: "Gagal menghapus kasir.") }
+            repository.deleteCashierUser(user)
+            emitMessage("Pengguna ${user.name} dihapus")
         }
     }
 
-    fun saveStoreSettings(newSettings: StoreSettingsEntity, onSuccess: () -> Unit = {}) {
+    // --- Backup, Restore & Export ---
+    fun exportDatabaseBackup(context: Context, uri: Uri) {
         viewModelScope.launch {
-            repository.saveSettings(newSettings)
-                .onSuccess {
-                    showMessage("Pengaturan berhasil disimpan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan pengaturan.") }
+            val snapshot = repository.getDatabaseSnapshot()
+            val res = BackupAndExportService.writeBackupToUri(context, uri, snapshot)
+            res.onSuccess { emitMessage(it) }
+                .onFailure { emitMessage("Gagal backup: ${it.message}") }
         }
     }
 
-    fun cancelTransaction(transactionId: Long, reason: String, onSuccess: () -> Unit = {}) {
+    fun restoreDatabaseBackup(context: Context, uri: Uri) {
         viewModelScope.launch {
-            repository.cancelTransaction(transactionId, reason)
-                .onSuccess {
-                    showMessage("Billing berhasil dibatalkan.")
-                    onSuccess()
-                }
-                .onFailure { showMessage(it.message ?: "Gagal membatalkan billing.") }
+            val res = BackupAndExportService.readBackupFromUri(context, uri)
+            res.onSuccess { snapshot ->
+                repository.restoreDatabaseSnapshot(snapshot)
+                refreshNextBillingNumber()
+                emitMessage("Database berhasil dipulihkan (${snapshot.products.size} menu, ${snapshot.transactions.size} transaksi)")
+            }.onFailure {
+                emitMessage("Gagal restore database: ${it.message}")
+            }
         }
     }
 
-    // --- PRINTER & TICKET OPERATIONS ---
-    fun selectDefaultPrinter(name: String, address: String, paperSizeMm: Int) {
-        viewModelScope.launch {
-            repository.setDefaultPrinter(name, address, paperSizeMm)
-                .onSuccess { showMessage("Printer default diatur ke: $name ($paperSizeMm mm)") }
-                .onFailure { showMessage(it.message ?: "Gagal menyimpan printer default.") }
-        }
-    }
-
-    fun printKitchenTicketBluetooth(
-        context: Context,
-        txWithItems: TransactionWithItems,
-        printerAddressOverride: String? = null
-    ) {
-        viewModelScope.launch {
-            showMessage("Mencetak tiket dapur ${txWithItems.transaction.billingDisplay}...")
-            BluetoothPrinterService.printKitchenTicketToBluetooth(
-                context = context,
-                txWithItems = txWithItems,
-                settings = settings.value,
-                printerAddressOverride = printerAddressOverride
-            ).onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Gagal mencetak tiket dapur.") }
-        }
-    }
-
-    fun shareKitchenTicketText(context: Context, txWithItems: TransactionWithItems) {
-        val text = BluetoothPrinterService.formatKitchenTicketText(txWithItems, settings.value.paperSizeMm)
-        BackupAndExportService.sharePlainText(
-            context = context,
-            text = text,
-            subject = "Pesanan Dapur - ${txWithItems.transaction.billingDisplay}"
-        )
-    }
-
-    fun printReceiptBluetooth(
-        context: Context,
-        txWithItems: TransactionWithItems,
-        printerAddressOverride: String? = null
-    ) {
-        viewModelScope.launch {
-            showMessage("Menghubungkan ke printer Bluetooth...")
-            val result = BluetoothPrinterService.printReceiptToBluetooth(
-                context = context,
-                txWithItems = txWithItems,
-                settings = settings.value,
-                printerAddressOverride = printerAddressOverride
-            )
-            result.onSuccess { msg -> showMessage(msg) }
-                .onFailure { err -> showMessage(err.message ?: "Gagal mencetak struk ke printer Bluetooth.") }
-        }
-    }
-
-    fun testPrintBluetooth(context: Context, printerName: String, printerAddress: String) {
-        viewModelScope.launch {
-            showMessage("Mengirim tes cetak ke $printerName...")
-            BluetoothPrinterService.testPrintBluetooth(
-                context = context,
-                settings = settings.value,
-                printerAddress = printerAddress,
-                printerName = printerName
-            ).onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Tes cetak gagal.") }
-        }
-    }
-
-    fun shareReceiptText(context: Context, txWithItems: TransactionWithItems) {
-        val text = BluetoothPrinterService.formatReceiptText(txWithItems, settings.value)
-        BackupAndExportService.sharePlainText(
-            context = context,
-            text = text,
-            subject = "Struk ${settings.value.storeName} - ${txWithItems.transaction.billingDisplay}"
-        )
-    }
-
-    fun shareOrSaveReceiptPdf(
-        context: Context,
-        txWithItems: TransactionWithItems,
-        onGeneratedFile: (File) -> Unit = {}
-    ) {
-        viewModelScope.launch {
-            BackupAndExportService.generateReceiptPdfFile(context, txWithItems, settings.value)
-                .onSuccess { pdfFile ->
-                    onGeneratedFile(pdfFile)
-                    BackupAndExportService.shareFile(
-                        context = context,
-                        file = pdfFile,
-                        mimeType = "application/pdf",
-                        chooserTitle = "Simpan / Bagikan Struk PDF"
-                    )
-                }
-                .onFailure { showMessage(it.message ?: "Gagal membuat file PDF struk.") }
-        }
-    }
-
-    fun saveReceiptPdfToUri(context: Context, txWithItems: TransactionWithItems, targetUri: Uri) {
-        viewModelScope.launch {
-            BackupAndExportService.generateReceiptPdfFile(context, txWithItems, settings.value)
-                .onSuccess { pdfFile ->
-                    runCatching {
-                        context.contentResolver.openOutputStream(targetUri)?.use { out ->
-                            pdfFile.inputStream().use { input -> input.copyTo(out) }
-                        } ?: throw IllegalStateException("Gagal menulis ke lokasi file.")
-                    }.onSuccess {
-                        showMessage("Struk PDF berhasil disimpan ke penyimpanan HP!")
-                    }.onFailure {
-                        showMessage(it.message ?: "Gagal menyimpan file PDF struk.")
-                    }
-                }
-                .onFailure { showMessage(it.message ?: "Gagal membuat PDF struk.") }
-        }
-    }
-
-    // --- BACKUP, RESTORE, EXPORT, IMPORT ---
-    fun performBackupToUri(context: Context, uri: Uri) {
-        viewModelScope.launch {
-            val dao = repository.getDao()
-            BackupAndExportService.writeBackupToUri(context, uri, dao)
-                .onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Gagal membuat backup database.") }
-        }
-    }
-
-    fun performRestoreFromUri(context: Context, uri: Uri) {
-        viewModelScope.launch {
-            val dao = repository.getDao()
-            BackupAndExportService.restoreFromUri(context, uri, dao)
-                .onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Restore gagal. Data lama tetap aman.") }
-        }
-    }
-
-    fun exportProductsCsv(context: Context, uri: Uri) {
-        viewModelScope.launch {
-            val dao = repository.getDao()
-            BackupAndExportService.exportProductsCsvToUri(context, uri, dao)
-                .onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Gagal export menu ke CSV.") }
-        }
-    }
-
-    fun importProductsCsv(context: Context, uri: Uri) {
-        viewModelScope.launch {
-            val dao = repository.getDao()
-            BackupAndExportService.importProductsCsvFromUri(context, uri, dao)
-                .onSuccess { showMessage(it) }
-                .onFailure { showMessage(it.message ?: "Gagal import menu dari CSV.") }
-        }
-    }
-
-    fun exportReportCsvToUri(
+    fun exportReportCsvOrExcel(
         context: Context,
         uri: Uri,
-        reportTitle: String,
-        periodLabel: String,
-        filteredTransactions: List<TransactionWithItems>
+        transactions: List<TransactionWithItems>,
+        isExcel: Boolean
     ) {
         viewModelScope.launch {
-            runCatching {
-                val csv = BackupAndExportService.buildReportCsv(
-                    reportTitle = reportTitle,
-                    periodLabel = periodLabel,
-                    transactions = filteredTransactions
-                )
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(csv.toByteArray(Charsets.UTF_8))
-                    out.flush()
-                } ?: throw IllegalStateException("Gagal menulis file CSV laporan.")
-            }.onSuccess {
-                showMessage("Laporan CSV berhasil disimpan!")
-            }.onFailure {
-                showMessage(it.message ?: "Gagal mengekspor laporan CSV.")
-            }
+            val res = BackupAndExportService.exportTransactionsToCsvUri(
+                context = context,
+                uri = uri,
+                transactions = transactions,
+                isExcelFormat = isExcel
+            )
+            res.onSuccess { emitMessage(it) }
+                .onFailure { emitMessage("Gagal ekspor laporan: ${it.message}") }
         }
     }
 
-    fun exportAndShareReportPdf(
+    fun exportReportPdf(
         context: Context,
-        periodLabel: String,
-        filteredTransactions: List<TransactionWithItems>
+        uri: Uri,
+        periodTitle: String,
+        transactions: List<TransactionWithItems>
     ) {
         viewModelScope.launch {
-            BackupAndExportService.generateReportPdfFile(
+            val res = BackupAndExportService.exportSalesReportPdfToUri(
                 context = context,
-                storeName = settings.value.storeName,
-                periodLabel = periodLabel,
-                transactions = filteredTransactions
-            ).onSuccess { file ->
-                BackupAndExportService.shareFile(
-                    context = context,
-                    file = file,
-                    mimeType = "application/pdf",
-                    chooserTitle = "Simpan / Bagikan Laporan PDF"
-                )
-            }.onFailure {
-                showMessage(it.message ?: "Gagal membuat file PDF laporan.")
-            }
+                uri = uri,
+                periodTitle = periodTitle,
+                storeName = storeSettings.value.storeName,
+                transactions = transactions
+            )
+            res.onSuccess { emitMessage(it) }
+                .onFailure { emitMessage("Gagal ekspor PDF: ${it.message}") }
+        }
+    }
+
+    fun resetTransactionsHistoryOnly() {
+        viewModelScope.launch {
+            repository.resetTransactionsHistoryOnly()
+            _activeBillingNumber.value = 1
+            emitMessage("Seluruh riwayat transaksi berhasil direset")
+        }
+    }
+
+    fun resetAllFactoryData() {
+        viewModelScope.launch {
+            repository.resetAllFactoryData()
+            _cartItems.value = emptyList()
+            _editingTransactionId.value = null
+            _selectedBillingForPayment.value = null
+            _activeBillingNumber.value = 1
+            emitMessage("Aplikasi dikembalikan ke pengaturan awal pabrik")
         }
     }
 }
 
-data class PaymentCalculation(
-    val subtotal: Double,
-    val discountAmount: Double,
-    val taxPercent: Double,
-    val taxAmount: Double,
-    val serviceFee: Double,
-    val roundingAmount: Double,
-    val finalTotal: Double,
-    val amountPaid: Double,
-    val changeAmount: Double,
-    val shortageAmount: Double,
-    val isSufficient: Boolean
-)
+class KasirViewModelFactory(
+    private val application: Application,
+    private val repository: KasirRepository
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(KasirViewModel::class.java)) {
+            return KasirViewModel(application, repository) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
+    }
+}

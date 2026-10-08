@@ -143,12 +143,12 @@ fun DashboardScreen(
         listOf(
             MenuGridItem("Pesan Menu", "Buat Billing & Dapur", Icons.Default.RestaurantMenu, AppScreen.POS, Color(0xFF0F766E), "menu_pos"),
             MenuGridItem("Pembayaran", "${unpaidBillings.size} Billing Belum Bayar", Icons.Default.Payments, AppScreen.PAYMENT, Color(0xFFD97706), "menu_payment"),
-            MenuGridItem("Daftar Menu", "Makanan & Minuman", Icons.Default.Restaurant, AppScreen.PRODUCTS, Color(0xFF2563EB), "menu_products"),
+            MenuGridItem("Edit Menu dan Harga", "Makanan & Minuman", Icons.Default.Restaurant, AppScreen.PRODUCTS, Color(0xFF2563EB), "menu_products"),
             MenuGridItem("Kategori", "Atur Kategori Menu", Icons.Default.Category, AppScreen.CATEGORIES, Color(0xFF7C3AED), "menu_categories"),
             MenuGridItem("Riwayat Transaksi", "Billing Lunas & Struk", Icons.Default.History, AppScreen.HISTORY, Color(0xFF059669), "menu_history"),
-            MenuGridItem("Laporan", "Omzet & Keuntungan", Icons.Default.Assessment, AppScreen.REPORTS, Color(0xFF0284C7), "menu_reports"),
+            MenuGridItem("Laporan Penjualan", "Rekap Harian & Omzet", Icons.Default.Assessment, AppScreen.REPORTS, Color(0xFF0284C7), "menu_reports"),
             MenuGridItem("Pelanggan", "Data Pelanggan", Icons.Default.People, AppScreen.CUSTOMERS, Color(0xFFDB2777), "menu_customers"),
-            MenuGridItem("Pengaturan", "Resto & Printer", Icons.Default.Settings, AppScreen.SETTINGS, Color(0xFF475569), "menu_settings")
+            MenuGridItem("Pengaturan", "Metode Bayar & Printer", Icons.Default.Settings, AppScreen.SETTINGS, Color(0xFF475569), "menu_settings")
         )
     }
 
